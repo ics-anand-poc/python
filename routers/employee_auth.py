@@ -1,0 +1,269 @@
+import logging
+import re
+from urllib.parse import quote
+
+from fastapi import APIRouter, Body, Depends, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
+
+from core.auth import bearer_token, require_employee
+from core.config import env
+from core.errors import json_error, public_error
+from core.security import get_client_ip, is_rate_limited, is_rate_limited_any, rate_limited_response
+from core.tokens import sign_token, verify_token
+from core.validation import as_email, as_employee_id, as_password, as_trimmed
+from services import accounts, audit, saml
+from services.products import format_product_display_name
+
+log = logging.getLogger("talentscope")
+router = APIRouter(prefix="/api/employee/auth", tags=["employee-auth"])
+
+HANDOFF_COOKIE = "ms_sso_handoff"
+
+
+def _strong(password: str) -> bool:
+    return bool(
+        len(password) >= 8
+        and re.search(r"[A-Z]", password)
+        and re.search(r"[a-z]", password)
+        and re.search(r"[0-9]", password)
+        and re.search(r"[^A-Za-z0-9]", password)
+    )
+
+
+def _cookie_secure() -> bool:
+    return env("NODE_ENV").lower() == "production"
+
+
+def _employee_payload(account: dict) -> dict:
+    return {"employee_id": account["employee_id"], "full_name": account["full_name"]}
+
+
+@router.post("/login")
+def login(request: Request, body: dict = Body(default_factory=dict)):
+    ip = get_client_ip(request)
+    ip_limit = is_rate_limited_any([f"auth:ip:{ip}"], 10, 60_000)
+    if ip_limit.limited:
+        return rate_limited_response(ip_limit, "Too many login attempts. Please try again later.")
+    try:
+        employee_id = as_employee_id(body.get("employee_id"))
+        raw_password = body.get("password")
+        password = as_password(raw_password.strip() if isinstance(raw_password, str) else raw_password, allow_empty=True)
+        if not employee_id:
+            return json_error(400, "Employee ID is required")
+        if password is None:
+            return json_error(400, "Invalid request")
+        account_limit = is_rate_limited_any([f"auth:acct:{employee_id.upper()}"], 8, 60_000)
+        if account_limit.limited:
+            return rate_limited_response(account_limit, "Too many login attempts. Please try again later.")
+        employee = accounts.get_account(employee_id)
+        if not employee:
+            return json_error(401, "Invalid Employee ID")
+        has_pw = accounts.has_password(employee)
+        hash_valid = has_pw and accounts.verify_password(password, employee.get("password_salt") or "", employee.get("password_hash") or "")
+        first_login = employee["is_first_login"] if employee.get("is_first_login") is not None else not has_pw
+        allowed_first = first_login and (password == "" or password.upper() == employee["employee_id"].strip().upper() or hash_valid)
+        actor = employee["email"] or employee["employee_id"]
+        if not hash_valid and not allowed_first:
+            audit.add_log(actor, "EMPLOYEE_LOGIN_FAILURE", "Employee Portal", "Invalid password provided", ip)
+            return json_error(401, "Invalid credentials")
+        token = sign_token(employee["employee_id"])
+        accounts.sync_account(employee)
+        if first_login:
+            audit.add_log(actor, "EMPLOYEE_LOGIN_FIRST_TIME_SUCCESS", "Employee Portal",
+                          "First time login with initial or blank password. Prompting to keep or change password.", ip)
+            return {"status": "first_time_modal", "token": token, "employee": _employee_payload(employee)}
+        audit.add_log(actor, "EMPLOYEE_LOGIN_SUCCESS", "Employee Portal", "Employee logged in and synced successfully", ip)
+        return {"status": "ok", "token": token, "employee": _employee_payload(employee)}
+    except Exception as err:
+        return public_error(err, "Unable to verify credentials")
+
+
+@router.get("/validate")
+def validate(employee: dict = Depends(require_employee)):
+    return {
+        "employee": {
+            "employee_id": employee["employee_id"],
+            "full_name": employee["full_name"],
+            "email": employee["email"],
+            "department": employee["department"],
+            "role": employee["role"],
+            "is_first_login": employee["is_first_login"],
+            "product": format_product_display_name(employee.get("product")),
+            "product_qb_eligible": accounts.is_product_qb_employee(employee),
+            "assessment_only": accounts.is_assessment_only_employee(employee),
+        }
+    }
+
+
+@router.post("/set-password")
+def set_password(request: Request, body: dict = Body(default_factory=dict)):
+    ip = get_client_ip(request)
+    ip_limit = is_rate_limited_any([f"auth:ip:{ip}"], 8, 60_000)
+    if ip_limit.limited:
+        return rate_limited_response(ip_limit, "Too many attempts. Please try again later.")
+    try:
+        employee_id = as_employee_id(body.get("employee_id"))
+        password = as_password(body.get("password"))
+        if not employee_id:
+            return json_error(400, "Employee ID is required")
+        if not password or not _strong(password):
+            return json_error(400, "Password does not meet the strength requirements")
+        account_limit = is_rate_limited_any([f"auth:acct:{employee_id.upper()}"], 5, 60_000)
+        if account_limit.limited:
+            return rate_limited_response(account_limit, "Too many attempts. Please try again later.")
+        employee = accounts.get_account(employee_id)
+        if not employee:
+            return json_error(404, "Employee not found")
+        if not employee["is_first_login"]:
+            return json_error(400, "Password setup has already been completed")
+        if not accounts.save_password(employee["employee_id"], password):
+            return json_error(500, "Failed to save password")
+        return {"status": "ok", "token": sign_token(employee["employee_id"]), "employee": _employee_payload(employee)}
+    except Exception as err:
+        return public_error(err, "Unable to set password")
+
+
+@router.post("/confirm-password")
+def confirm_password(request: Request, body: dict = Body(default_factory=dict)):
+    ip = get_client_ip(request)
+    ip_limit = is_rate_limited_any([f"auth:ip:{ip}"], 8, 60_000)
+    if ip_limit.limited:
+        return rate_limited_response(ip_limit, "Too many attempts. Please try again later.")
+    employee_id = verify_token(bearer_token(request))
+    employee = accounts.get_account(employee_id) if employee_id else None
+    if not employee:
+        return json_error(401, "Unauthorized access or expired session.")
+    try:
+        action = (as_trimmed(body.get("action"), 20) or "keep").lower()
+        token = bearer_token(request)
+        if action == "keep":
+            accounts.complete_first_login(employee["employee_id"])
+            return {"status": "ok", "message": "Initial password retained.", "token": token, "employee": _employee_payload(employee)}
+        if action == "change":
+            new_password = as_password(body.get("password"))
+            if not new_password:
+                return json_error(400, "Please enter a new password.")
+            if not _strong(new_password):
+                return json_error(400, "Password must be at least 8 characters long, contain uppercase, lowercase, number, and special character.")
+            if not accounts.save_password(employee["employee_id"], new_password):
+                return json_error(500, "Failed to update password.")
+            return {"status": "ok", "message": "Password updated successfully.", "token": token, "employee": _employee_payload(employee)}
+        return json_error(400, "Invalid action type.")
+    except Exception as err:
+        return public_error(err, "Failed to process request.")
+
+
+@router.post("/reset-password")
+def reset_password(request: Request, body: dict = Body(default_factory=dict)):
+    ip = get_client_ip(request)
+    ip_limit = is_rate_limited_any([f"auth:ip:{ip}"], 8, 60_000)
+    if ip_limit.limited:
+        return rate_limited_response(ip_limit, "Too many attempts. Please try again later.")
+    try:
+        employee_id = as_employee_id(body.get("employee_id"))
+        email = as_email(body.get("email")) if isinstance(body.get("email"), str) and body["email"].strip() else ""
+        password = as_password(body.get("password"))
+        if not employee_id:
+            return json_error(400, "Employee ID is required")
+        if password is None:
+            return json_error(400, "Invalid request")
+        account_limit = is_rate_limited_any([f"auth:acct:{employee_id.upper()}"], 5, 60_000)
+        if account_limit.limited:
+            return rate_limited_response(account_limit, "Too many attempts. Please try again later.")
+        employee = accounts.get_account(employee_id)
+        if not employee:
+            return json_error(404, "Employee ID not found")
+        if employee["email"] and (not email or employee["email"].lower().strip() != email.lower().strip()):
+            return json_error(400, "Provided email does not match our records for this Employee ID")
+        if not _strong(password):
+            return json_error(400, "Password does not meet the strength requirements (Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char)")
+        if not accounts.save_password(employee["employee_id"], password):
+            return json_error(500, "Unable to reset password")
+        return {"status": "ok", "message": "Password reset successful"}
+    except Exception as err:
+        return public_error(err, "Unable to reset password")
+
+
+@router.get("/microsoft/handoff")
+def handoff(request: Request):
+    token = request.cookies.get(HANDOFF_COOKIE) or ""
+    ok = bool(token) and verify_token(token) is not None
+    response = JSONResponse(
+        {"status": "ok", "token": token} if ok else {"error": "Microsoft sign-in session expired. Please try again.", "message": "Microsoft sign-in session expired. Please try again."},
+        status_code=200 if ok else 401,
+    )
+    response.delete_cookie(HANDOFF_COOKIE, path="/")
+    return response
+
+
+def _sso_error(app: str, message: str, status: int = 307) -> RedirectResponse:
+    return RedirectResponse(f"{app}/employee?sso_error={quote(message, safe='')}", status_code=status)
+
+
+@router.get("/saml")
+def saml_start(request: Request):
+    cfg = saml.get_config()
+    ip = get_client_ip(request)
+    if is_rate_limited(f"employee_saml_login_{ip}", 12, 60_000).limited:
+        return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.")
+    if not cfg["configured"]:
+        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]))
+    try:
+        return RedirectResponse(saml.build_authorize_url("/employee", cfg), status_code=302)
+    except Exception as err:
+        log.error("SAML login redirect error: %s", err)
+        return _sso_error(cfg["app_url"], "Could not start Microsoft sign-in.")
+
+
+@router.post("/saml/acs")
+async def saml_acs(request: Request):
+    cfg = saml.get_config()
+    ip = get_client_ip(request)
+    if is_rate_limited(f"employee_saml_acs_{ip}", 20, 60_000).limited:
+        return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.", 303)
+    if not cfg["configured"]:
+        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]), 303)
+    try:
+        form = await request.form()
+        saml_response = str(form.get("SAMLResponse") or "")
+        if not saml_response:
+            return _sso_error(cfg["app_url"], "Microsoft sign-in did not return a SAML response.", 303)
+        profile = saml.validate_post_response(saml_response, cfg)
+        emails = saml.profile_emails(profile, cfg)
+        employee = None
+        for email in emails:
+            employee = accounts.get_account_by_email(email)
+            if employee:
+                break
+        if not employee:
+            local = saml.profile_local_part(profile, cfg)
+            employee = accounts.get_account(local) if local else None
+        if not employee:
+            audit.add_log(emails[0] if emails else str(profile.get("nameID") or "unknown"), "EMPLOYEE_SAML_SSO_FAILURE",
+                          "Employee Portal", "SAML identity is not linked to an Employee Portal roster email or ID.", ip)
+            return _sso_error(
+                cfg["app_url"],
+                "No Employee Portal account is linked to this Microsoft email. Sign in with your Employee ID or ask HR to map your work email.",
+                303,
+            )
+        token = sign_token(employee["employee_id"])
+        accounts.sync_account(employee)
+        audit.add_log(employee["email"] or (emails[0] if emails else employee["employee_id"]), "EMPLOYEE_SAML_SSO_SUCCESS",
+                      "Employee Portal", f"SAML SSO login as {employee['full_name']} ({employee['employee_id']}).", ip)
+        response = RedirectResponse(f"{cfg['app_url']}/employee/sso-complete", status_code=303)
+        response.set_cookie(HANDOFF_COOKIE, token, max_age=120, httponly=True, samesite="lax", secure=_cookie_secure(), path="/")
+        return response
+    except saml.SamlError as err:
+        log.warning("SAML ACS rejected: %s", err)
+        return _sso_error(cfg["app_url"], "Microsoft sign-in failed validation. Contact IT if this continues.", 303)
+    except Exception as err:
+        log.error("SAML ACS error: %s", err)
+        return _sso_error(cfg["app_url"], "Microsoft sign-in failed validation. Contact IT if this continues.", 303)
+
+
+@router.get("/saml/metadata")
+def saml_metadata():
+    cfg = saml.get_config()
+    if not cfg["issuer"]:
+        return json_error(503, "Set SAML_ISSUER to generate service provider metadata.")
+    return Response(saml.build_metadata(cfg), media_type="application/xml; charset=utf-8", headers={"Cache-Control": "no-store"})

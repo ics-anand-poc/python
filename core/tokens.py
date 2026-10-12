@@ -1,0 +1,60 @@
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
+from typing import Optional
+
+from core.config import env
+
+DEV_SECRET = "dev-employee-auth-secret"
+
+
+def _secret() -> bytes:
+    return (env("EMPLOYEE_AUTH_SECRET") or DEV_SECRET).encode("utf-8")
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
+
+
+def sign_token(employee_id: str, expires_in_ms: int = 7 * 24 * 60 * 60 * 1000) -> str:
+    payload = json.dumps(
+        {"employee_id": employee_id.strip().upper(), "exp": int(time.time() * 1000) + expires_in_ms},
+        separators=(",", ":"),
+    )
+    encoded = _b64url_encode(payload.encode("utf-8"))
+    signature = hmac.new(_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def verify_token(token: Optional[str]) -> Optional[str]:
+    if not token or not isinstance(token, str) or "." not in token:
+        return None
+    encoded, _, signature = token.partition(".")
+    if not encoded or not signature:
+        return None
+    expected = hmac.new(_secret(), encoded.encode("ascii", "ignore"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature.encode("utf-8"), expected.encode("utf-8")):
+        return None
+    try:
+        data = json.loads(_b64url_decode(encoded).decode("utf-8"))
+    except Exception:
+        return None
+    if time.time() * 1000 > float(data.get("exp", 0)):
+        return None
+    return data.get("employee_id")
+
+
+def require_secret_in_production() -> None:
+    if env("NODE_ENV").lower() == "production" and not env("EMPLOYEE_AUTH_SECRET"):
+        raise RuntimeError("EMPLOYEE_AUTH_SECRET must be set in production")
+
+
+def random_hex(nbytes: int = 16) -> str:
+    return os.urandom(nbytes).hex()

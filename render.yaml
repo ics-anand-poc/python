@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: talentscope-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    disk:
+      name: talentscope-uploads
+      mountPath: /app/uploads
+      sizeGB: 1
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: NODE_ENV
+        value: production
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: MSSQL_TARGET
+        value: azure
+      - key: MSSQL_AZURE_PORT
+        value: "1433"
+      - key: MSSQL_AZURE_ENCRYPT
+        value: "true"
+      - key: MSSQL_AZURE_TRUST_SERVER_CERTIFICATE
+        value: "false"
+      - key: MSSQL_AZURE_SERVER
+        sync: false
+      - key: MSSQL_AZURE_DATABASE
+        sync: false
+      - key: MSSQL_AZURE_USER
+        sync: false
+      - key: MSSQL_AZURE_PASSWORD
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: EMPLOYEE_AUTH_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SCREENING_ADMIN_PASSWORD
+        sync: false
+      - key: SUPERVISOR_PASSWORD
+        sync: false
+      - key: FACE_MATCH_SERVICE_URL
+        sync: false
+      - key: FACE_MATCH_API_KEY
+        sync: false
+      - key: LOCAL_LLM_URL
+        sync: false
+      - key: LOCAL_LLM_API_KEY
+        sync: false

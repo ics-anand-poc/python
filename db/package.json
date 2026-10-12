@@ -1,0 +1,27 @@
+{
+  "name": "talentscope-db",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TalentScope MSSQL database as code: schema migrations + table data (local, remote, azure).",
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:bootstrap": "tsx scripts/bootstrap.ts",
+    "db:status": "tsx scripts/migrate.ts status",
+    "db:migrate": "tsx scripts/migrate.ts migrate",
+    "db:deploy-data": "tsx scripts/deploy-data.ts",
+    "db:local": "tsx scripts/migrate.ts migrate --target=local && tsx scripts/deploy-data.ts --target=local",
+    "db:deploy:remote": "tsx scripts/migrate.ts migrate --target=remote && tsx scripts/deploy-data.ts --target=remote",
+    "typecheck": "tsc --noEmit",
+    "db:azure": "tsx scripts/migrate.ts migrate --target=azure && tsx scripts/deploy-data.ts --target=azure"
+  },
+  "dependencies": {
+    "mssql": "^12.7.2"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.7",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.3"
+  }
+}
