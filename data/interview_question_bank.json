@@ -1,0 +1,482 @@
+{
+ "verbal": {
+  "python": [
+   {
+    "q": "Explain how Python's GIL affects multi-threaded programs and how you would choose between threading, multiprocessing and asyncio for an I/O-heavy service versus a CPU-heavy job.",
+    "d": "Medium"
+   },
+   {
+    "q": "You have a FastAPI or Django endpoint whose latency doubled after a release. Walk through how you would profile it and isolate whether the cause is the code, the database or an external call.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do generators and context managers help with memory and resource handling? Describe a case where you replaced a list-building loop with a generator and what changed.",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would design retries, timeouts and idempotency for a Python worker that processes messages from a queue and calls an unreliable third-party API.",
+    "d": "Hard"
+   },
+   {
+    "q": "How do you structure a Python project for testability? Explain your approach to dependency injection, fixtures and mocking external services.",
+    "d": "Medium"
+   },
+   {
+    "q": "A pandas or ETL job that ran in minutes now takes hours as data volume grew. What steps would you take to find and fix the bottleneck?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would handle database connection pooling and transaction boundaries in a Python web service under heavy concurrent load.",
+    "d": "Hard"
+   },
+   {
+    "q": "What are the differences between a list, tuple, set and dict in terms of mutability, ordering and lookup cost, and when would you pick each?",
+    "d": "Easy"
+   }
+  ],
+  "javascript": [
+   {
+    "q": "Explain the event loop, microtasks and macrotasks, and describe a bug you have seen caused by misunderstanding async ordering.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do closures, the this keyword and prototypes interact in JavaScript, and where have they caused issues in real code?",
+    "d": "Medium"
+   },
+   {
+    "q": "A React or Node application becomes slow as data grows. How do you diagnose rendering or event-loop blocking problems and what fixes do you reach for first?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would design error handling and cancellation for a set of dependent API calls in a front-end or Node service, including retries and race conditions.",
+    "d": "Hard"
+   },
+   {
+    "q": "How do you manage application state and avoid unnecessary re-renders in a large front-end codebase?",
+    "d": "Medium"
+   },
+   {
+    "q": "What security issues do you check for in a JavaScript web application (XSS, CSRF, dependency risks) and how do you mitigate them?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would structure a Node.js service to handle thousands of concurrent requests safely, including streaming large payloads and backpressure.",
+    "d": "Hard"
+   },
+   {
+    "q": "What is the difference between var, let and const, and between == and ===, and why does it matter in code review?",
+    "d": "Easy"
+   }
+  ],
+  "typescript": [
+   {
+    "q": "How do generics, union types and type narrowing help you model an API response safely? Give an example from your own work.",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain the difference between interface and type, and when you would use unknown rather than any.",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would introduce strict TypeScript into a large JavaScript codebase incrementally without blocking delivery.",
+    "d": "Hard"
+   },
+   {
+    "q": "How do you keep types in sync between a back-end API and a TypeScript front-end, and what breaks when they drift?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain mapped and conditional types with a practical use case you have implemented.",
+    "d": "Medium"
+   },
+   {
+    "q": "A TypeScript build takes minutes and the editor lags. What would you inspect to improve compile and tooling performance?",
+    "d": "Medium"
+   },
+   {
+    "q": "What does the compiler guarantee at runtime, and what does it not? How do you validate untrusted input at the boundary?",
+    "d": "Easy"
+   },
+   {
+    "q": "How would you design a type-safe event or state management layer that supports many event types without losing inference?",
+    "d": "Hard"
+   }
+  ],
+  "java": [
+   {
+    "q": "Explain how the JVM manages memory and garbage collection, and how you would investigate a memory leak or long GC pauses in production.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you design thread-safe code in Java? Compare synchronized, locks, atomics and concurrent collections with an example of when you used each.",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how Spring Boot handles dependency injection and transaction management, and a case where transaction boundaries caused a subtle bug.",
+    "d": "Medium"
+   },
+   {
+    "q": "A REST service built with Spring is slow under load because of the database. How would you find N+1 queries, tune connection pools and add caching safely?",
+    "d": "Hard"
+   },
+   {
+    "q": "What are the differences between checked and unchecked exceptions, and how do you design an exception strategy for a service layer?",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you test a Java microservice end to end, including contract tests, mocking external dependencies and database tests?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would design a resilient integration with an unreliable downstream service using timeouts, retries, circuit breakers and idempotency.",
+    "d": "Hard"
+   },
+   {
+    "q": "Explain equals and hashCode, immutability and why String is immutable, and the problems you have seen when they are implemented incorrectly.",
+    "d": "Easy"
+   }
+  ],
+  "cpp": [
+   {
+    "q": "Explain RAII and smart pointers (unique_ptr, shared_ptr, weak_ptr) and describe how they prevented leaks or dangling pointers in your work.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do move semantics and copy elision change how you design classes and pass objects around in modern C++?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would debug a crash or data race in a multi-threaded C++ application, including the tools you would use.",
+    "d": "Hard"
+   },
+   {
+    "q": "How do you choose between std::vector, std::list, std::map and std::unordered_map, and how does cache locality influence the decision?",
+    "d": "Medium"
+   },
+   {
+    "q": "What causes undefined behavior in C++, and what practices or tooling do you use to avoid it?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would design a thread-safe producer-consumer queue and the trade-offs between mutex-based and lock-free designs.",
+    "d": "Hard"
+   },
+   {
+    "q": "How do templates and virtual functions differ as polymorphism mechanisms, and when would you choose each?",
+    "d": "Medium"
+   },
+   {
+    "q": "What is the difference between stack and heap allocation, and what are the consequences for object lifetime?",
+    "d": "Easy"
+   }
+  ],
+  "sql": [
+   {
+    "q": "A report query that used to run in seconds now takes minutes. How do you read the execution plan and decide between adding an index, rewriting the query or updating statistics?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain the difference between INNER, LEFT and FULL joins and describe a bug caused by a misplaced filter on the outer table.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do transaction isolation levels and locking affect concurrent writers, and how do you diagnose blocking or deadlocks?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would design a schema and indexing strategy for a table that grows by millions of rows per day and must support both point lookups and time-range reports.",
+    "d": "Hard"
+   },
+   {
+    "q": "When would you use window functions or CTEs, and can you describe a problem they solved more cleanly than subqueries?",
+    "d": "Medium"
+   },
+   {
+    "q": "What is normalization, and when have you deliberately denormalized and why?",
+    "d": "Easy"
+   },
+   {
+    "q": "How do you make schema migrations safe on a live system with no downtime?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would diagnose and fix tempdb or log growth caused by a long-running transaction.",
+    "d": "Hard"
+   }
+  ],
+  "devops": [
+   {
+    "q": "Walk through a CI/CD pipeline you built or maintained, including how you handle build caching, secrets, approvals and rollbacks.",
+    "d": "Medium"
+   },
+   {
+    "q": "A deployment passes in staging but fails in production. How do you narrow down environment differences quickly?",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you structure infrastructure as code (Terraform, Ansible or CloudFormation) for multiple environments while avoiding drift?",
+    "d": "Medium"
+   },
+   {
+    "q": "Explain how you would design monitoring and alerting for a service so that on-call engineers are paged only for actionable problems.",
+    "d": "Hard"
+   },
+   {
+    "q": "Describe how you troubleshoot a Kubernetes pod stuck in CrashLoopBackOff or Pending, step by step.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you manage secrets and least-privilege access across cloud accounts and pipelines?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe a blue-green or canary release strategy you have implemented and how you decided when to roll back.",
+    "d": "Hard"
+   },
+   {
+    "q": "What is the difference between a container and a virtual machine, and what are the implications for security and resource usage?",
+    "d": "Easy"
+   }
+  ],
+  "testing": [
+   {
+    "q": "How do you decide what to automate versus test manually, and how do you keep an automation suite from becoming flaky?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe the framework structure you used for UI or API automation, including page objects, test data management and reporting.",
+    "d": "Medium"
+   },
+   {
+    "q": "A test passes locally but fails intermittently in CI. How do you isolate whether the cause is timing, data, environment or the product?",
+    "d": "Medium"
+   },
+   {
+    "q": "How would you design a regression strategy for a product that releases weekly with limited QA time?",
+    "d": "Hard"
+   },
+   {
+    "q": "Explain how you design API tests beyond status codes, including contract validation, negative cases and authentication.",
+    "d": "Medium"
+   },
+   {
+    "q": "What is the difference between smoke, sanity and regression testing, and when do you run each?",
+    "d": "Easy"
+   },
+   {
+    "q": "How do you measure the quality of a test suite beyond coverage percentage?",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you would introduce performance testing into a delivery pipeline and which results should block a release.",
+    "d": "Hard"
+   }
+  ],
+  "general": [
+   {
+    "q": "Describe the architecture of the most complex system you contributed to, your specific role, and one design decision you would change today.",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you debug a critical production issue when logs are limited, and how do you prevent a recurrence?",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you ensure code quality and maintainability on a team: reviews, testing and standards?",
+    "d": "Medium"
+   },
+   {
+    "q": "Tell me about a performance bottleneck you found and fixed, including how you measured the improvement.",
+    "d": "Medium"
+   },
+   {
+    "q": "Describe how you design for scalability and failure handling in a service that must grow ten times in traffic.",
+    "d": "Hard"
+   },
+   {
+    "q": "What security practices do you apply when building or reviewing a feature that handles user data?",
+    "d": "Medium"
+   },
+   {
+    "q": "How do you break down an ambiguous requirement into tasks and decide what to clarify before starting?",
+    "d": "Easy"
+   },
+   {
+    "q": "Explain a trade-off you made between delivery speed and technical quality, and how you communicated it.",
+    "d": "Medium"
+   }
+  ]
+ },
+ "coding": {
+  "python": [
+   {
+    "q": "Coding Challenge: (Python) Palindrome check. Write a function that returns whether a string is a palindrome, ignoring case and non-alphanumeric characters. Input: \"A man, a plan, a canal: Panama\" -> Output: true. Input: \"race a car\" -> Output: false. Constraints: 0 <= length <= 100000; an empty string is a palindrome. Starter signature in Python:\ndef is_palindrome(s: str) -> bool:",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Python) Two sum. Given an array of integers and a target, return the indices of the two numbers that add up to the target. Exactly one solution exists and an element cannot be reused. Input: nums = [2,7,11,15], target = 9 -> Output: [0,1]. Input: nums = [3,2,4], target = 6 -> Output: [1,2]. Constraints: 2 <= n <= 100000; aim for O(n) time. Starter signature in Python:\ndef two_sum(nums: list[int], target: int) -> list[int]:",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Python) Valid brackets. Given a string containing only the characters ()[]{}, determine whether the brackets are balanced and correctly nested. Input: \"([]{})\" -> Output: true. Input: \"(]\" -> Output: false. Input: \"\" -> Output: true. Constraints: length <= 100000; aim for O(n) time. Starter signature in Python:\ndef is_balanced(s: str) -> bool:",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Python) Group anagrams. Group a list of words so that words that are anagrams of each other end up in the same group. The order of groups and of words inside a group does not matter. Input: [\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"] -> Output: [[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]. Input: [\"\"] -> Output: [[\"\"]]. Constraints: up to 10000 words, each up to 100 lowercase letters. Starter signature in Python:\ndef group_anagrams(words: list[str]) -> list[list[str]]:",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Python) Merge intervals. Given a list of closed intervals, merge all overlapping intervals and return the result sorted by start value. Input: [[1,3],[2,6],[8,10],[15,18]] -> Output: [[1,6],[8,10],[15,18]]. Input: [[1,4],[4,5]] -> Output: [[1,5]]. Constraints: up to 100000 intervals; aim for O(n log n) time. Starter signature in Python:\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Python) Longest unique substring. Return the length of the longest substring of a string that contains no repeated characters. Input: \"abcabcbb\" -> Output: 3. Input: \"bbbbb\" -> Output: 1. Input: \"\" -> Output: 0. Constraints: length <= 100000; aim for O(n) time using a sliding window. Starter signature in Python:\ndef longest_unique_substring(s: str) -> int:",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Python) Top K frequent. Given an array of integers and a number k, return the k most frequent elements in any order. Input: nums = [1,1,1,2,2,3], k = 2 -> Output: [1,2]. Input: nums = [4], k = 1 -> Output: [4]. Constraints: k is always valid; aim for better than O(n log n) where possible. Starter signature in Python:\ndef top_k_frequent(nums: list[int], k: int) -> list[int]:",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Python) LRU cache. Design an LRU cache with a fixed capacity supporting get(key) and put(key, value) in O(1) average time. get returns -1 for a missing key and put evicts the least recently used entry when capacity is exceeded. Example: capacity 2; put(1,1); put(2,2); get(1) -> 1; put(3,3) evicts key 2; get(2) -> -1. Constraints: capacity >= 1; up to 100000 operations. Starter signature in Python:\nclass LRUCache:\n    def __init__(self, capacity: int): ...\n    def get(self, key: int) -> int: ...\n    def put(self, key: int, value: int) -> None: ...",
+    "d": "Hard"
+   }
+  ],
+  "javascript": [
+   {
+    "q": "Coding Challenge: (JavaScript) Palindrome check. Write a function that returns whether a string is a palindrome, ignoring case and non-alphanumeric characters. Input: \"A man, a plan, a canal: Panama\" -> Output: true. Input: \"race a car\" -> Output: false. Constraints: 0 <= length <= 100000; an empty string is a palindrome. Starter signature in JavaScript:\nfunction isPalindrome(s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Two sum. Given an array of integers and a target, return the indices of the two numbers that add up to the target. Exactly one solution exists and an element cannot be reused. Input: nums = [2,7,11,15], target = 9 -> Output: [0,1]. Input: nums = [3,2,4], target = 6 -> Output: [1,2]. Constraints: 2 <= n <= 100000; aim for O(n) time. Starter signature in JavaScript:\nfunction twoSum(nums, target) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Valid brackets. Given a string containing only the characters ()[]{}, determine whether the brackets are balanced and correctly nested. Input: \"([]{})\" -> Output: true. Input: \"(]\" -> Output: false. Input: \"\" -> Output: true. Constraints: length <= 100000; aim for O(n) time. Starter signature in JavaScript:\nfunction isBalanced(s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Group anagrams. Group a list of words so that words that are anagrams of each other end up in the same group. The order of groups and of words inside a group does not matter. Input: [\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"] -> Output: [[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]. Input: [\"\"] -> Output: [[\"\"]]. Constraints: up to 10000 words, each up to 100 lowercase letters. Starter signature in JavaScript:\nfunction groupAnagrams(words) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Merge intervals. Given a list of closed intervals, merge all overlapping intervals and return the result sorted by start value. Input: [[1,3],[2,6],[8,10],[15,18]] -> Output: [[1,6],[8,10],[15,18]]. Input: [[1,4],[4,5]] -> Output: [[1,5]]. Constraints: up to 100000 intervals; aim for O(n log n) time. Starter signature in JavaScript:\nfunction mergeIntervals(intervals) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Longest unique substring. Return the length of the longest substring of a string that contains no repeated characters. Input: \"abcabcbb\" -> Output: 3. Input: \"bbbbb\" -> Output: 1. Input: \"\" -> Output: 0. Constraints: length <= 100000; aim for O(n) time using a sliding window. Starter signature in JavaScript:\nfunction longestUniqueSubstring(s) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) Top K frequent. Given an array of integers and a number k, return the k most frequent elements in any order. Input: nums = [1,1,1,2,2,3], k = 2 -> Output: [1,2]. Input: nums = [4], k = 1 -> Output: [4]. Constraints: k is always valid; aim for better than O(n log n) where possible. Starter signature in JavaScript:\nfunction topKFrequent(nums, k) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (JavaScript) LRU cache. Design an LRU cache with a fixed capacity supporting get(key) and put(key, value) in O(1) average time. get returns -1 for a missing key and put evicts the least recently used entry when capacity is exceeded. Example: capacity 2; put(1,1); put(2,2); get(1) -> 1; put(3,3) evicts key 2; get(2) -> -1. Constraints: capacity >= 1; up to 100000 operations. Starter signature in JavaScript:\nclass LRUCache {\n  constructor(capacity) {}\n  get(key) {}\n  put(key, value) {}\n}",
+    "d": "Hard"
+   }
+  ],
+  "typescript": [
+   {
+    "q": "Coding Challenge: (TypeScript) Palindrome check. Write a function that returns whether a string is a palindrome, ignoring case and non-alphanumeric characters. Input: \"A man, a plan, a canal: Panama\" -> Output: true. Input: \"race a car\" -> Output: false. Constraints: 0 <= length <= 100000; an empty string is a palindrome. Starter signature in TypeScript:\nfunction isPalindrome(s: string): boolean {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Two sum. Given an array of integers and a target, return the indices of the two numbers that add up to the target. Exactly one solution exists and an element cannot be reused. Input: nums = [2,7,11,15], target = 9 -> Output: [0,1]. Input: nums = [3,2,4], target = 6 -> Output: [1,2]. Constraints: 2 <= n <= 100000; aim for O(n) time. Starter signature in TypeScript:\nfunction twoSum(nums: number[], target: number): number[] {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Valid brackets. Given a string containing only the characters ()[]{}, determine whether the brackets are balanced and correctly nested. Input: \"([]{})\" -> Output: true. Input: \"(]\" -> Output: false. Input: \"\" -> Output: true. Constraints: length <= 100000; aim for O(n) time. Starter signature in TypeScript:\nfunction isBalanced(s: string): boolean {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Group anagrams. Group a list of words so that words that are anagrams of each other end up in the same group. The order of groups and of words inside a group does not matter. Input: [\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"] -> Output: [[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]. Input: [\"\"] -> Output: [[\"\"]]. Constraints: up to 10000 words, each up to 100 lowercase letters. Starter signature in TypeScript:\nfunction groupAnagrams(words: string[]): string[][] {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Merge intervals. Given a list of closed intervals, merge all overlapping intervals and return the result sorted by start value. Input: [[1,3],[2,6],[8,10],[15,18]] -> Output: [[1,6],[8,10],[15,18]]. Input: [[1,4],[4,5]] -> Output: [[1,5]]. Constraints: up to 100000 intervals; aim for O(n log n) time. Starter signature in TypeScript:\nfunction mergeIntervals(intervals: number[][]): number[][] {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Longest unique substring. Return the length of the longest substring of a string that contains no repeated characters. Input: \"abcabcbb\" -> Output: 3. Input: \"bbbbb\" -> Output: 1. Input: \"\" -> Output: 0. Constraints: length <= 100000; aim for O(n) time using a sliding window. Starter signature in TypeScript:\nfunction longestUniqueSubstring(s: string): number {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) Top K frequent. Given an array of integers and a number k, return the k most frequent elements in any order. Input: nums = [1,1,1,2,2,3], k = 2 -> Output: [1,2]. Input: nums = [4], k = 1 -> Output: [4]. Constraints: k is always valid; aim for better than O(n log n) where possible. Starter signature in TypeScript:\nfunction topKFrequent(nums: number[], k: number): number[] {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (TypeScript) LRU cache. Design an LRU cache with a fixed capacity supporting get(key) and put(key, value) in O(1) average time. get returns -1 for a missing key and put evicts the least recently used entry when capacity is exceeded. Example: capacity 2; put(1,1); put(2,2); get(1) -> 1; put(3,3) evicts key 2; get(2) -> -1. Constraints: capacity >= 1; up to 100000 operations. Starter signature in TypeScript:\nclass LRUCache {\n  constructor(capacity: number) {}\n  get(key: number): number {}\n  put(key: number, value: number): void {}\n}",
+    "d": "Hard"
+   }
+  ],
+  "java": [
+   {
+    "q": "Coding Challenge: (Java) Palindrome check. Write a function that returns whether a string is a palindrome, ignoring case and non-alphanumeric characters. Input: \"A man, a plan, a canal: Panama\" -> Output: true. Input: \"race a car\" -> Output: false. Constraints: 0 <= length <= 100000; an empty string is a palindrome. Starter signature in Java:\npublic static boolean isPalindrome(String s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Java) Two sum. Given an array of integers and a target, return the indices of the two numbers that add up to the target. Exactly one solution exists and an element cannot be reused. Input: nums = [2,7,11,15], target = 9 -> Output: [0,1]. Input: nums = [3,2,4], target = 6 -> Output: [1,2]. Constraints: 2 <= n <= 100000; aim for O(n) time. Starter signature in Java:\npublic static int[] twoSum(int[] nums, int target) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Java) Valid brackets. Given a string containing only the characters ()[]{}, determine whether the brackets are balanced and correctly nested. Input: \"([]{})\" -> Output: true. Input: \"(]\" -> Output: false. Input: \"\" -> Output: true. Constraints: length <= 100000; aim for O(n) time. Starter signature in Java:\npublic static boolean isBalanced(String s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (Java) Group anagrams. Group a list of words so that words that are anagrams of each other end up in the same group. The order of groups and of words inside a group does not matter. Input: [\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"] -> Output: [[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]. Input: [\"\"] -> Output: [[\"\"]]. Constraints: up to 10000 words, each up to 100 lowercase letters. Starter signature in Java:\npublic static List<List<String>> groupAnagrams(String[] words) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Java) Merge intervals. Given a list of closed intervals, merge all overlapping intervals and return the result sorted by start value. Input: [[1,3],[2,6],[8,10],[15,18]] -> Output: [[1,6],[8,10],[15,18]]. Input: [[1,4],[4,5]] -> Output: [[1,5]]. Constraints: up to 100000 intervals; aim for O(n log n) time. Starter signature in Java:\npublic static int[][] mergeIntervals(int[][] intervals) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Java) Longest unique substring. Return the length of the longest substring of a string that contains no repeated characters. Input: \"abcabcbb\" -> Output: 3. Input: \"bbbbb\" -> Output: 1. Input: \"\" -> Output: 0. Constraints: length <= 100000; aim for O(n) time using a sliding window. Starter signature in Java:\npublic static int longestUniqueSubstring(String s) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Java) Top K frequent. Given an array of integers and a number k, return the k most frequent elements in any order. Input: nums = [1,1,1,2,2,3], k = 2 -> Output: [1,2]. Input: nums = [4], k = 1 -> Output: [4]. Constraints: k is always valid; aim for better than O(n log n) where possible. Starter signature in Java:\npublic static int[] topKFrequent(int[] nums, int k) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (Java) LRU cache. Design an LRU cache with a fixed capacity supporting get(key) and put(key, value) in O(1) average time. get returns -1 for a missing key and put evicts the least recently used entry when capacity is exceeded. Example: capacity 2; put(1,1); put(2,2); get(1) -> 1; put(3,3) evicts key 2; get(2) -> -1. Constraints: capacity >= 1; up to 100000 operations. Starter signature in Java:\nclass LRUCache {\n    public LRUCache(int capacity) {}\n    public int get(int key) {}\n    public void put(int key, int value) {}\n}",
+    "d": "Hard"
+   }
+  ],
+  "cpp": [
+   {
+    "q": "Coding Challenge: (C++) Palindrome check. Write a function that returns whether a string is a palindrome, ignoring case and non-alphanumeric characters. Input: \"A man, a plan, a canal: Panama\" -> Output: true. Input: \"race a car\" -> Output: false. Constraints: 0 <= length <= 100000; an empty string is a palindrome. Starter signature in C++:\nbool isPalindrome(const std::string& s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (C++) Two sum. Given an array of integers and a target, return the indices of the two numbers that add up to the target. Exactly one solution exists and an element cannot be reused. Input: nums = [2,7,11,15], target = 9 -> Output: [0,1]. Input: nums = [3,2,4], target = 6 -> Output: [1,2]. Constraints: 2 <= n <= 100000; aim for O(n) time. Starter signature in C++:\nstd::vector<int> twoSum(const std::vector<int>& nums, int target) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (C++) Valid brackets. Given a string containing only the characters ()[]{}, determine whether the brackets are balanced and correctly nested. Input: \"([]{})\" -> Output: true. Input: \"(]\" -> Output: false. Input: \"\" -> Output: true. Constraints: length <= 100000; aim for O(n) time. Starter signature in C++:\nbool isBalanced(const std::string& s) {",
+    "d": "Easy"
+   },
+   {
+    "q": "Coding Challenge: (C++) Group anagrams. Group a list of words so that words that are anagrams of each other end up in the same group. The order of groups and of words inside a group does not matter. Input: [\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"] -> Output: [[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]. Input: [\"\"] -> Output: [[\"\"]]. Constraints: up to 10000 words, each up to 100 lowercase letters. Starter signature in C++:\nstd::vector<std::vector<std::string>> groupAnagrams(const std::vector<std::string>& words) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (C++) Merge intervals. Given a list of closed intervals, merge all overlapping intervals and return the result sorted by start value. Input: [[1,3],[2,6],[8,10],[15,18]] -> Output: [[1,6],[8,10],[15,18]]. Input: [[1,4],[4,5]] -> Output: [[1,5]]. Constraints: up to 100000 intervals; aim for O(n log n) time. Starter signature in C++:\nstd::vector<std::vector<int>> mergeIntervals(std::vector<std::vector<int>> intervals) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (C++) Longest unique substring. Return the length of the longest substring of a string that contains no repeated characters. Input: \"abcabcbb\" -> Output: 3. Input: \"bbbbb\" -> Output: 1. Input: \"\" -> Output: 0. Constraints: length <= 100000; aim for O(n) time using a sliding window. Starter signature in C++:\nint longestUniqueSubstring(const std::string& s) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (C++) Top K frequent. Given an array of integers and a number k, return the k most frequent elements in any order. Input: nums = [1,1,1,2,2,3], k = 2 -> Output: [1,2]. Input: nums = [4], k = 1 -> Output: [4]. Constraints: k is always valid; aim for better than O(n log n) where possible. Starter signature in C++:\nstd::vector<int> topKFrequent(const std::vector<int>& nums, int k) {",
+    "d": "Medium"
+   },
+   {
+    "q": "Coding Challenge: (C++) LRU cache. Design an LRU cache with a fixed capacity supporting get(key) and put(key, value) in O(1) average time. get returns -1 for a missing key and put evicts the least recently used entry when capacity is exceeded. Example: capacity 2; put(1,1); put(2,2); get(1) -> 1; put(3,3) evicts key 2; get(2) -> -1. Constraints: capacity >= 1; up to 100000 operations. Starter signature in C++:\nclass LRUCache {\npublic:\n    LRUCache(int capacity);\n    int get(int key);\n    void put(int key, int value);\n};",
+    "d": "Hard"
+   }
+  ]
+ }
+}

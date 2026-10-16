@@ -4,11 +4,11 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from core.config import UPLOAD_DIR, env
 from core.db import MssqlStore, get_store
-from services import llm
+from services import llm, question_queue
 
 CACHE_S = 8.0
 STALE_AFTER_S = 180
@@ -74,13 +74,12 @@ def app_runtime() -> dict:
     from core import security
 
     store = get_store()
-    return {"llm": llm.stats(), "traffic": security.traffic_snapshot(),
+    return {"llm": llm.stats(), "traffic": security.traffic_snapshot(), "questionQueue": question_queue.snapshot(),
             "dbPool": store.pool_stats() if isinstance(store, MssqlStore) else None}
 
 
 def collect_vm() -> dict:
     snapshot, modified, error = read_json("snapshot.json")
-    history, _, _ = read_json("history.json")
     age = round((datetime.now(timezone.utc) - modified).total_seconds()) if modified else None
     try:
         live = live_readings()
@@ -90,7 +89,7 @@ def collect_vm() -> dict:
             "collector": {"available": snapshot is not None, "dir": str(monitor_dir()),
                           "snapshotAt": modified.isoformat() if modified else None, "ageSeconds": age,
                           "stale": age is None or age > STALE_AFTER_S, "error": error},
-            "live": live, "snapshot": snapshot, "history": history or [], "runtime": app_runtime()}
+            "live": live, "snapshot": snapshot, "runtime": app_runtime()}
 
 
 def measure_latency() -> dict:
@@ -243,17 +242,9 @@ def compare_with_other_db(current: str):
 
 
 def storage_usage() -> list[dict]:
-    root = UPLOAD_DIR
-    out = []
-    for bucket in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
-        sizes = [f.stat().st_size for f in bucket.iterdir() if f.is_file() and not f.name.endswith(".part")]
-        times = [f.stat().st_mtime for f in bucket.iterdir() if f.is_file()]
-        if sizes:
-            out.append({"bucket": bucket.name, "files": len(sizes), "bytes": sum(sizes), "largestBytes": max(sizes),
-                        "avgBytes": sum(sizes) // len(sizes),
-                        "newest": datetime.fromtimestamp(max(times), timezone.utc).isoformat(),
-                        "oldest": datetime.fromtimestamp(min(times), timezone.utc).isoformat()})
-    return sorted(out, key=lambda b: b["bytes"], reverse=True)
+    from services import storage
+
+    return storage.usage_summary()
 
 
 def app_activity():
@@ -413,14 +404,188 @@ def collect_db() -> dict:
     return out
 
 
+HISTORY_DAYS = 7
+HISTORY_RETENTION_S = (HISTORY_DAYS + 1) * 86400
+MAX_WINDOW_S = 25 * 3600
+SHORT_WINDOW_S = 6 * 3600
+DB_SAMPLE_S = 60
+DB_PRUNE_S = 3600
+_sampler = {"started": False, "prev_batch": None, "last_prune": 0.0}
+_history_lock = threading.Lock()
+
+
+def db_history_path() -> Path:
+    return UPLOAD_DIR / "monitor" / "db-history.jsonl"
+
+
+def vm_history_path() -> Path:
+    return monitor_dir() / "history.jsonl"
+
+
+def parse_window(params, now: Optional[float] = None) -> tuple[int, int]:
+    now = time.time() if now is None else now
+    try:
+        start, end = float(params.get("from")), float(params.get("to"))
+    except (TypeError, ValueError):
+        start = end = 0.0
+    valid = end > start and end - start <= MAX_WINDOW_S and now - HISTORY_RETENTION_S - 86400 <= start <= now
+    return (int(start), int(end) + (0 if end == int(end) else 1)) if valid else (int(now) - SHORT_WINDOW_S, int(now))
+
+
+def read_history_file(path: Path) -> list[dict]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    points = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            point = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(point, dict) and isinstance(point.get("ts"), (int, float)):
+            points.append(point)
+    return points
+
+
+def downsample(points: list[dict], window: tuple[int, int]) -> dict:
+    start, end = window
+    bucket = 3600 if end - start > SHORT_WINDOW_S else 300
+    sums: dict[int, dict[str, list[float]]] = {}
+    for point in points:
+        if not start <= point["ts"] < end:
+            continue
+        key = start + int((point["ts"] - start) // bucket) * bucket
+        slot = sums.setdefault(key, {})
+        for name, value in point.items():
+            if name == "ts" or isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+                continue
+            total = slot.setdefault(name, [0.0, 0])
+            total[0] += value
+            total[1] += 1
+    out = []
+    for key in sorted(sums):
+        entry = {"ts": key, "t": datetime.fromtimestamp(key, timezone.utc).isoformat()}
+        entry.update({name: round(total / count, 2) for name, (total, count) in sums[key].items()})
+        out.append(entry)
+    return {"from": datetime.fromtimestamp(start, timezone.utc).isoformat(), "to": datetime.fromtimestamp(end, timezone.utc).isoformat(),
+            "bucketSeconds": bucket, "points": out,
+            "oldestAt": datetime.fromtimestamp(points[0]["ts"], timezone.utc).isoformat() if points else None,
+            "retentionDays": HISTORY_DAYS}
+
+
+def legacy_vm_history() -> list[dict]:
+    data, _, _ = read_json("history.json")
+    return [p for p in data if isinstance(p, dict) and isinstance(p.get("ts"), (int, float))] if isinstance(data, list) else []
+
+
+def history_points(target: str) -> list[dict]:
+    if target == "db":
+        return read_history_file(db_history_path())
+    return read_history_file(vm_history_path()) or legacy_vm_history()
+
+
+def _round(value, digits: int = 1):
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def db_point() -> dict:
+    now = int(time.time())
+    point: dict = {"ts": now, "t": datetime.fromtimestamp(now, timezone.utc).isoformat()}
+    started = time.perf_counter()
+    rows("SELECT 1 AS ok")
+    point["latencyMs"] = _round((time.perf_counter() - started) * 1000)
+    point["down"] = 0
+    space = rows("""
+        SELECT SUM(CASE WHEN type = 0 THEN CAST(size AS bigint) END) * 8 / 1024.0 AS dataMb,
+               SUM(CASE WHEN type = 0 THEN CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint) END) * 8 / 1024.0 AS dataUsedMb,
+               SUM(CASE WHEN type = 1 THEN CAST(size AS bigint) END) * 8 / 1024.0 AS logMb,
+               SUM(CASE WHEN type = 1 THEN CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint) END) * 8 / 1024.0 AS logUsedMb
+        FROM sys.database_files""")[0]
+    point["dataMb"], point["dataUsedMb"], point["logMb"] = _round(space.get("dataMb")), _round(space.get("dataUsedMb")), _round(space.get("logMb"))
+    point["logUsedPct"] = _round(100 * float(space["logUsedMb"]) / float(space["logMb"])) if space.get("logMb") else None
+    store = get_store()
+    if isinstance(store, MssqlStore):
+        point["poolInUse"] = store.pool_stats()["inUse"]
+    try:
+        counters = {r["counter"]: float(r["value"]) for r in rows(COUNTERS_SQL)}
+        point["userConnections"] = counters.get("User Connections")
+        point["blocked"] = counters.get("Processes blocked")
+        point["pageLifeSec"] = counters.get("Page life expectancy")
+        memory = counters.get("Total Server Memory (KB)")
+        point["sqlMemoryMb"] = _round(memory / 1024, 0) if memory is not None else None
+        batches = counters.get("Batch Requests/sec")
+        if batches is not None:
+            prev = _sampler["prev_batch"]
+            if prev and batches >= prev[1] and 0 < now - prev[0] < 600:
+                point["batchPerSec"] = _round((batches - prev[1]) / (now - prev[0]), 2)
+            _sampler["prev_batch"] = (now, batches)
+        cpu = rows(CPU_HISTORY_SQL)
+        if cpu:
+            point["sqlCpu"], point["otherCpu"] = cpu[0].get("sql"), cpu[0].get("other")
+    except Exception:
+        pass
+    return point
+
+
+def prune_db_history(path: Path) -> None:
+    since = time.time() - HISTORY_RETENTION_S
+    points = read_history_file(path)
+    if not points or points[0]["ts"] >= since:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(p, separators=(",", ":")) + "\n" for p in points if p["ts"] >= since), encoding="utf-8")
+    tmp.replace(path)
+
+
+def sample_db_once() -> None:
+    path = db_history_path()
+    try:
+        point = db_point()
+    except Exception as err:
+        now = int(time.time())
+        point = {"ts": now, "t": datetime.fromtimestamp(now, timezone.utc).isoformat(), "down": 1, "error": str(err)[:200]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _history_lock:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(point, separators=(",", ":")) + "\n")
+        if time.time() - _sampler["last_prune"] > DB_PRUNE_S:
+            _sampler["last_prune"] = time.time()
+            prune_db_history(path)
+
+
+def _sampler_loop() -> None:
+    time.sleep(20)
+    while True:
+        try:
+            sample_db_once()
+        except Exception:
+            pass
+        time.sleep(DB_SAMPLE_S)
+
+
+def start_db_sampler() -> bool:
+    if _sampler["started"] or not isinstance(get_store(), MssqlStore):
+        return False
+    _sampler["started"] = True
+    threading.Thread(target=_sampler_loop, daemon=True, name="db-history").start()
+    return True
+
+
 COLLECTORS = {"vm": collect_vm, "db": collect_db}
 
 
-def collect(target: str) -> dict:
+def collect(target: str, window: Optional[tuple[int, int]] = None) -> dict:
     with _locks[target]:
         hit = _cache.get(target)
         if hit and time.monotonic() - hit[0] < CACHE_S:
-            return hit[1]
-        body = COLLECTORS[target]()
-        _cache[target] = (time.monotonic(), body)
-        return body
+            body = hit[1]
+        else:
+            body = COLLECTORS[target]()
+            _cache[target] = (time.monotonic(), body)
+    return {**body, "history": downsample(history_points(target), window or parse_window({}))}

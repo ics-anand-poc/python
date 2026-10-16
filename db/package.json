@@ -13,7 +13,8 @@
     "db:local": "tsx scripts/migrate.ts migrate --target=local && tsx scripts/deploy-data.ts --target=local",
     "db:deploy:remote": "tsx scripts/migrate.ts migrate --target=remote && tsx scripts/deploy-data.ts --target=remote",
     "typecheck": "tsc --noEmit",
-    "db:azure": "tsx scripts/migrate.ts migrate --target=azure && tsx scripts/deploy-data.ts --target=azure"
+    "db:azure": "tsx scripts/migrate.ts migrate --target=azure && tsx scripts/deploy-data.ts --target=azure",
+    "db:sync-live": "tsx scripts/sync-live-to-dev.ts"
   },
   "dependencies": {
     "mssql": "^12.7.2"

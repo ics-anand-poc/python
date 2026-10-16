@@ -9,3 +9,4 @@ uploads/
 !.env.example
 db/node_modules/
 db/mssql/data/*.json
+/tests/

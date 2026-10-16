@@ -3,16 +3,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
-# Prefer service-local environment files, then allow the combined local workspace file.
-_env_candidates = [ROOT / ".env.local", ROOT.parent / ".env.local", ROOT / ".env", ROOT.parent / ".env"]
+# In local dev, ROOT is the repo root (two levels above python/core/).
+# In Docker, the app lives at /app/ so parents[2] resolves to / — fall back
+# to the directory that contains main.py (one level up from core/).
+_env_candidates = [ROOT / ".env.local", Path(__file__).resolve().parents[1] / ".env.local"]
 for _candidate in _env_candidates:
     if _candidate.is_file():
         load_dotenv(_candidate, override=False)
         break
 
-_default_uploads = ROOT / "uploads"
+_default_uploads = ROOT / "python" / "uploads"
+if not _default_uploads.parent.is_dir():
+    _default_uploads = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or str(_default_uploads)).resolve()
 
 

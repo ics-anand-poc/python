@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_admin, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from services import admin_accounts, corp_pool, docs_storage, portal_roster as pr, test_video
@@ -97,7 +97,7 @@ def _apply_jd_match(roster: list[dict], jd_id) -> list[dict]:
 @router.get("")
 def list_employees(request: Request):
     try:
-        email = (request.query_params.get("email") or "").strip().lower()
+        email = acting_admin_email(request) or ""
         hide_portal = bool(email) and not admin_accounts.get_access(email)["canViewEmployeePortal"]
         deleted = corp_pool.load_deleted()
         roster = [e for e in corp_pool.load_roster() if not corp_pool.is_deleted(deleted, e["employee_id"], e.get("source_file", ""))]
@@ -267,7 +267,7 @@ def as_uuid_ok(value: str) -> bool:
     return bool(pr.UUID_RE.match(value or ""))
 
 
-@router.post("/reset-test")
+@router.post("/reset-test", dependencies=[Depends(require_permission("employeePortal"))])
 def reset_test(body: dict = Body(default_factory=dict)):
     test_id, employee_id = str(body.get("testId") or "").strip(), str(body.get("employeeId") or "").strip()
     if not test_id and not employee_id:
@@ -293,7 +293,7 @@ def reset_test(body: dict = Body(default_factory=dict)):
         return public_error(err, "Internal error")
 
 
-@router.post("/delete-video")
+@router.post("/delete-video", dependencies=[Depends(require_permission("employeePortal"))])
 def delete_video(body: dict = Body(default_factory=dict)):
     try:
         items = body.get("items") if isinstance(body.get("items"), list) else None
@@ -505,13 +505,13 @@ def export_shortlisted(body: dict = Body(default_factory=dict)):
         return public_error(err, "Export failed")
 
 
-@router.get("/export-portal")
+@router.get("/export-portal", dependencies=[Depends(require_permission("employeePortal"))])
 def export_portal(request: Request):
     from datetime import date
 
     from services import exports
 
-    email = (request.query_params.get("email") or "").strip().lower()
+    email = acting_admin_email(request) or ""
     if email and not admin_accounts.get_access(email)["canViewEmployeePortal"]:
         return json_error(403, "Employee Portal is not available for this login.")
     try:

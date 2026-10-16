@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 import re
 from urllib.parse import quote
 
@@ -11,13 +12,15 @@ from core.errors import json_error, public_error
 from core.security import get_client_ip, is_rate_limited, is_rate_limited_any, rate_limited_response
 from core.tokens import sign_token, verify_token
 from core.validation import as_email, as_employee_id, as_password, as_trimmed
-from services import accounts, audit, saml
+from services import accounts, admin_accounts, audit, saml
 from services.products import format_product_display_name
 
 log = logging.getLogger("talentscope")
 router = APIRouter(prefix="/api/employee/auth", tags=["employee-auth"])
 
 HANDOFF_COOKIE = "ms_sso_handoff"
+ADMIN_HANDOFF_COOKIE = "ms_admin_sso_handoff"
+SSO_FAILED = "Microsoft sign-in failed validation. Contact IT if this continues."
 
 
 def _strong(password: str) -> bool:
@@ -184,6 +187,42 @@ def reset_password(request: Request, body: dict = Body(default_factory=dict)):
         return public_error(err, "Unable to reset password")
 
 
+@router.post("/change-password")
+def change_password(request: Request, body: dict = Body(default_factory=dict)):
+    ip = get_client_ip(request)
+    ip_limit = is_rate_limited_any([f"auth:ip:{ip}"], 8, 60_000)
+    if ip_limit.limited:
+        return rate_limited_response(ip_limit, "Too many attempts. Please try again later.")
+    employee_id = verify_token(bearer_token(request))
+    employee = accounts.get_account(employee_id) if employee_id else None
+    if not employee:
+        return json_error(401, "Unauthorized access or expired session.")
+    account_limit = is_rate_limited_any([f"auth:acct:{employee['employee_id'].upper()}"], 5, 60_000)
+    if account_limit.limited:
+        return rate_limited_response(account_limit, "Too many attempts. Please try again later.")
+    try:
+        current = as_password(body.get("currentPassword").strip() if isinstance(body.get("currentPassword"), str) else body.get("currentPassword"), True)
+        new_password = as_password(body.get("newPassword"))
+        if not current or not new_password:
+            return json_error(400, "Current and new password are required.")
+        actor = employee["email"] or employee["employee_id"]
+        current_ok = accounts.has_password(employee) and accounts.verify_password(
+            current, employee.get("password_salt") or "", employee.get("password_hash") or "")
+        if not current_ok:
+            audit.add_log(actor, "EMPLOYEE_PASSWORD_CHANGE_FAILURE", "Employee Portal", "Current password incorrect", ip)
+            return json_error(400, "Current password is incorrect.")
+        if not _strong(new_password):
+            return json_error(400, "Password must be at least 8 characters long, contain uppercase, lowercase, number, and special character.")
+        if new_password == current:
+            return json_error(400, "New password must be different from the current one.")
+        if not accounts.save_password(employee["employee_id"], new_password):
+            return json_error(500, "Failed to update password.")
+        audit.add_log(actor, "EMPLOYEE_PASSWORD_CHANGE_SUCCESS", "Employee Portal", "Employee changed their password", ip)
+        return {"status": "ok", "message": "Password updated successfully."}
+    except Exception as err:
+        return public_error(err, "Failed to update password.")
+
+
 @router.get("/microsoft/handoff")
 def handoff(request: Request):
     token = request.cookies.get(HANDOFF_COOKIE) or ""
@@ -196,23 +235,74 @@ def handoff(request: Request):
     return response
 
 
-def _sso_error(app: str, message: str, status: int = 307) -> RedirectResponse:
-    return RedirectResponse(f"{app}/employee?sso_error={quote(message, safe='')}", status_code=status)
+def _sso_error(app: str, message: str, status: int = 307, target: str = "employee") -> RedirectResponse:
+    return RedirectResponse(f"{app}/{target}?sso_error={quote(message, safe='')}", status_code=status)
+
+
+@router.get("/saml/status")
+def saml_status():
+    cfg = saml.get_config()
+    return JSONResponse({"enabled": cfg["enabled"], "adminSso": cfg["enabled"] and cfg["admin_sso"]}, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/saml")
 def saml_start(request: Request):
     cfg = saml.get_config()
     ip = get_client_ip(request)
+    target = "admin" if request.query_params.get("target") == "admin" else "employee"
     if is_rate_limited(f"employee_saml_login_{ip}", 12, 60_000).limited:
-        return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.")
-    if not cfg["configured"]:
-        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]))
+        return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.", target=target)
+    if not cfg["enabled"]:
+        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]) if cfg["missing"] else "Microsoft sign-in is turned off.", target=target)
+    if target == "admin" and not cfg["admin_sso"]:
+        return _sso_error(cfg["app_url"], "Microsoft sign-in is not enabled for the admin console.", target=target)
     try:
-        return RedirectResponse(saml.build_authorize_url("/employee", cfg), status_code=302)
+        return RedirectResponse(saml.start_login(target, f"/{target}", cfg), status_code=302)
     except Exception as err:
         log.error("SAML login redirect error: %s", err)
-        return _sso_error(cfg["app_url"], "Could not start Microsoft sign-in.")
+        return _sso_error(cfg["app_url"], "Could not start Microsoft sign-in.", target=target)
+
+
+def _admin_identity(emails: list[str]) -> Optional[str]:
+    for email in emails:
+        if email.endswith("@infinite.com") and (admin_accounts.is_super_admin(email) or admin_accounts.get_named_record(email)):
+            return email
+    return None
+
+
+def _finish_admin(cfg: dict, profile: dict, emails: list[str], ip: str):
+    email = _admin_identity(emails)
+    if not email:
+        audit.add_log(emails[0] if emails else str(profile.get("nameID") or "unknown"), "ADMIN_SAML_SSO_FAILURE", "Admin Console",
+                      "SAML identity has no admin access.", ip)
+        return _sso_error(cfg["app_url"], "This Microsoft account does not have admin access.", 303, "admin")
+    audit.add_log(email, "ADMIN_SAML_SSO_SUCCESS", "Admin Console", "SAML SSO login to the admin console.", ip)
+    response = RedirectResponse(f"{cfg['app_url']}/admin/sso-complete", status_code=303)
+    response.set_cookie(ADMIN_HANDOFF_COOKIE, sign_token("admin", 60 * 60 * 1000, email=email), max_age=120, httponly=True,
+                        samesite="lax", secure=_cookie_secure(), path="/")
+    return response
+
+
+def _finish_employee(cfg: dict, profile: dict, emails: list[str], ip: str):
+    employee = None
+    for email in emails:
+        employee = accounts.get_account_by_email(email)
+        if employee:
+            break
+    if not employee:
+        local = saml.profile_local_part(profile, cfg)
+        employee = accounts.get_account(local) if local else None
+    if not employee:
+        audit.add_log(emails[0] if emails else str(profile.get("nameID") or "unknown"), "EMPLOYEE_SAML_SSO_FAILURE",
+                      "Employee Portal", "SAML identity is not linked to an Employee Portal roster email or ID.", ip)
+        return _sso_error(cfg["app_url"], "No Employee Portal account is linked to this Microsoft email. Sign in with your Employee ID or ask HR to map your work email.", 303)
+    accounts.sync_account(employee)
+    audit.add_log(employee["email"] or (emails[0] if emails else employee["employee_id"]), "EMPLOYEE_SAML_SSO_SUCCESS",
+                  "Employee Portal", f"SAML SSO login as {employee['full_name']} ({employee['employee_id']}).", ip)
+    response = RedirectResponse(f"{cfg['app_url']}/employee/sso-complete", status_code=303)
+    response.set_cookie(HANDOFF_COOKIE, sign_token(employee["employee_id"]), max_age=120, httponly=True, samesite="lax",
+                        secure=_cookie_secure(), path="/")
+    return response
 
 
 @router.post("/saml/acs")
@@ -221,44 +311,30 @@ async def saml_acs(request: Request):
     ip = get_client_ip(request)
     if is_rate_limited(f"employee_saml_acs_{ip}", 20, 60_000).limited:
         return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.", 303)
-    if not cfg["configured"]:
-        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]), 303)
+    if not cfg["enabled"]:
+        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]) if cfg["missing"] else "Microsoft sign-in is turned off.", 303)
+    target = "employee"
     try:
         form = await request.form()
         saml_response = str(form.get("SAMLResponse") or "")
         if not saml_response:
             return _sso_error(cfg["app_url"], "Microsoft sign-in did not return a SAML response.", 303)
-        profile = saml.validate_post_response(saml_response, cfg)
+        request_id = saml.response_request_id(saml_response)
+        pending = saml.consume_pending(request_id)
+        if pending is None and (request_id or not cfg["allow_idp_initiated"]):
+            audit.add_log("unknown", "SAML_SSO_REJECTED", "SSO", "SAML response did not match a login started from Talentscope.", ip)
+            return _sso_error(cfg["app_url"], "Start Microsoft sign-in from the Talentscope login page and try again.", 303)
+        target = (pending or {}).get("target", "employee")
+        profile = saml.validate_post_response(saml_response, cfg, expected_request_id=request_id if pending else None)
         emails = saml.profile_emails(profile, cfg)
-        employee = None
-        for email in emails:
-            employee = accounts.get_account_by_email(email)
-            if employee:
-                break
-        if not employee:
-            local = saml.profile_local_part(profile, cfg)
-            employee = accounts.get_account(local) if local else None
-        if not employee:
-            audit.add_log(emails[0] if emails else str(profile.get("nameID") or "unknown"), "EMPLOYEE_SAML_SSO_FAILURE",
-                          "Employee Portal", "SAML identity is not linked to an Employee Portal roster email or ID.", ip)
-            return _sso_error(
-                cfg["app_url"],
-                "No Employee Portal account is linked to this Microsoft email. Sign in with your Employee ID or ask HR to map your work email.",
-                303,
-            )
-        token = sign_token(employee["employee_id"])
-        accounts.sync_account(employee)
-        audit.add_log(employee["email"] or (emails[0] if emails else employee["employee_id"]), "EMPLOYEE_SAML_SSO_SUCCESS",
-                      "Employee Portal", f"SAML SSO login as {employee['full_name']} ({employee['employee_id']}).", ip)
-        response = RedirectResponse(f"{cfg['app_url']}/employee/sso-complete", status_code=303)
-        response.set_cookie(HANDOFF_COOKIE, token, max_age=120, httponly=True, samesite="lax", secure=_cookie_secure(), path="/")
-        return response
+        return _finish_admin(cfg, profile, emails, ip) if target == "admin" else _finish_employee(cfg, profile, emails, ip)
     except saml.SamlError as err:
         log.warning("SAML ACS rejected: %s", err)
-        return _sso_error(cfg["app_url"], "Microsoft sign-in failed validation. Contact IT if this continues.", 303)
+        audit.add_log("unknown", "SAML_SSO_REJECTED", "SSO", str(err)[:200], ip)
+        return _sso_error(cfg["app_url"], SSO_FAILED, 303, target)
     except Exception as err:
         log.error("SAML ACS error: %s", err)
-        return _sso_error(cfg["app_url"], "Microsoft sign-in failed validation. Contact IT if this continues.", 303)
+        return _sso_error(cfg["app_url"], SSO_FAILED, 303, target)
 
 
 @router.get("/saml/metadata")

@@ -16,7 +16,7 @@ from core.errors import install_error_handlers
 from core.security import install_traffic_controls
 from core.tokens import require_secret_in_production
 from routers import ROUTERS
-from services import storage
+from services import employee_tests, monitor, question_queue, saml, storage
 
 log = logging.getLogger("talentscope")
 RETENTION_INTERVAL_S = 6 * 3600
@@ -38,7 +38,12 @@ def run_retention() -> None:
 async def lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = env_int("API_THREADS", 24)
     threading.Thread(target=run_retention, daemon=True, name="retention").start()
+    question_queue.start_workers()
+    monitor.start_db_sampler()
+    threading.Thread(target=saml.get_config, daemon=True, name="saml-metadata").start()
+    employee_tests.start_expiry_sweeper()
     yield
+    question_queue.stop_workers()
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

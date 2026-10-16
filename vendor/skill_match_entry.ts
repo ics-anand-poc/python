@@ -1,4 +1,4 @@
-import { calculateSkillMatch, compileJdForMatch, employeeMatchText } from "../../ui/src/lib/skill-match";
+import { calculateSkillMatch, compileJdForMatch, employeeMatchText } from "../../UI/src/lib/skill-match";
 
 type Person = { skills?: string; designation?: string; grade?: string; product?: string; role?: string };
 

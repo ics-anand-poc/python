@@ -16,6 +16,7 @@ JSON_COLUMNS = {
     "portal_settings": {"value"},
     "evaluations": {"bloom_scores", "bloom_submissions", "bloom_graded"},
     "candidate_interview_data": {"evaluation"},
+    "question_sets": {"items"},
 }
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

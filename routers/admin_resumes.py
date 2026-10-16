@@ -4,13 +4,13 @@ from html import escape
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_admin
 from core.config import app_url
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import get_client_ip
 from core.validation import as_uuid
-from services import admin_accounts, audit, mailer, reset_logs, resumes, sessions, storage
+from services import admin_accounts, audit, mailer, question_queue, reset_logs, resumes, sessions, storage
 from services.invite_mail import build_invite_html
 from services.structured_log import write_log
 
@@ -31,7 +31,7 @@ def _format_attempt(attempt: dict) -> dict:
 
 @router.get("")
 def list_resumes(request: Request):
-    email = (request.query_params.get("email") or "").lower().strip()
+    email = acting_admin_email(request) or ""
     try:
         items = resumes.list_resumes()
         if email and not admin_accounts.can_view_org_screening_data(email):
@@ -98,6 +98,7 @@ def _clear_candidate(resume_id: str) -> None:
     store = get_store()
     store.delete("interview_attempts", {"resume_id": resume_id})
     store.delete("interview_questions", {"resume_id": resume_id})
+    question_queue.reset(resume_id)
     resume = resumes.get_resume(resume_id, True)
     if resume and resume.get("report"):
         for key in ("videoUrl", "proctoring", "videoDuration"):
@@ -137,9 +138,10 @@ def download(resume_id: str):
     rid = as_uuid(resume_id)
     if not rid:
         return json_error(400, "Invalid resume id")
-    stored = next((f for f in storage.bucket_dir("resumes").iterdir() if f.name.startswith(f"{rid}-")), None)
-    if stored:
-        data, name = stored.read_bytes(), stored.name[len(rid) + 1:]
+    stored = next((f for f in storage.bucket_dir("resumes").iterdir() if f.is_file() and f.name.startswith(f"{rid}-")), None)
+    data = storage.read("resumes", stored.name) if stored else None
+    if stored and data:
+        name = stored.name[len(rid) + 1:]
     else:
         row = get_store().first("resumes", {"id": rid}, ["filename", "file_base64"])
         if not row or not row.get("file_base64"):
@@ -211,9 +213,12 @@ def invite(resume_id: str, request: Request, body: dict = Body(default_factory=d
             resumes.save_row(resume)
             try:
                 get_store().delete("interview_questions", {"resume_id": rid})
+                question_queue.reset(rid)
             except Exception as err:
                 log.error("Failed to delete existing interview questions on config update: %s", err)
         sessions.create_candidate_session(email, rid)
+        if not question_queue.existing_questions(rid):
+            question_queue.enqueue(rid)
         kind = (config or {}).get("interviewType") or "technical"
         label = {"both": "combined technical and non-technical", "non-technical": "non-technical"}.get(kind, "technical")
         full_name = (resume.get("parsed") or {}).get("personal", {}).get("fullName") or "Candidate"
