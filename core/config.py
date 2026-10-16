@@ -5,10 +5,16 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# In local dev, ROOT is the repo root (two levels above python/core/).
+# In local dev, ROOT is the repository root (two levels above python/core/).
 # In Docker, the app lives at /app/ so parents[2] resolves to / — fall back
 # to the directory that contains main.py (one level up from core/).
-_env_candidates = [ROOT / ".env.local", Path(__file__).resolve().parents[1] / ".env.local"]
+APP_ROOT = Path(__file__).resolve().parents[1]
+_env_candidates = [
+    APP_ROOT / ".env.local",
+    ROOT / ".env.local",
+    APP_ROOT / ".env",
+    ROOT / ".env",
+]
 for _candidate in _env_candidates:
     if _candidate.is_file():
         load_dotenv(_candidate, override=False)
@@ -62,4 +68,13 @@ def mssql_settings() -> dict:
         "driver": env(prefix + "ODBC_DRIVER") or env("MSSQL_ODBC_DRIVER") or "ODBC Driver 18 for SQL Server",
         "pool_max": env_int("MSSQL_POOL_MAX", 10),
         "pool_wait_s": env_int("MSSQL_POOL_WAIT_S", 20),
+    }
+
+def supabase_db_settings() -> dict:
+    return {
+        "host": env("SUPABASE_DB_HOST"),
+        "port": env_int("SUPABASE_DB_PORT", 5432),
+        "database": env("SUPABASE_DB_NAME", "postgres"),
+        "user": env("SUPABASE_DB_USER"),
+        "password": env("SUPABASE_DB_PASSWORD"),
     }
