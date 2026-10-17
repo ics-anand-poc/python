@@ -66,6 +66,8 @@ The standalone diagnostic checks the Supabase Auth endpoint and runs `SELECT 1` 
 
 `db/mssql/migrations` and the Node CLI remain available for the local and production SQL Server profiles. The SQL Server migration CLI reads profile settings from `conf/application.properties`; use `npm run db:migrate -- --target=local` or `npm run db:migrate -- --target=azure`.
 
-The Render Blueprint selects the `production` profile. Configure `MSSQL_PRODUCTION_PASSWORD` and the application/auth secrets in the Render dashboard. The SQL Server host must be reachable from Render.
+The Render Blueprint selects `APP_PROFILE=vercel` for Supabase PostgreSQL and `NODE_ENV=production` for production security behavior. Configure `SUPABASE_DB_HOST`, `SUPABASE_DB_USER`, and `SUPABASE_DB_PASSWORD` in the Render dashboard; the Blueprint sets the database name and port defaults. Do not copy the local `.env` into the image or Render. Apply the PostgreSQL migrations with `python scripts/migrate_postgres.py` after the Render environment variables are configured and before serving application traffic.
+
+The Dockerfile builds from this repository root and excludes `.env` from the image. Render must be able to resolve and connect to the configured Supabase database endpoint over TLS. If using the direct Supabase endpoint, verify that its address family is reachable from Render; otherwise use the appropriate Supavisor endpoint and credentials. Profile `vercel` selects PostgreSQL, while the app disables background worker threads only when it is actually running on Vercel; Render runs as a regular web service.
 
 For UI/API integration checks, keep the UI checkout beside this repository or set `TALENTSCOPE_UI_DIR` to its path, then run `python scripts/check_api_links.py`.

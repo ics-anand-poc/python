@@ -16,11 +16,21 @@ services:
       - key: NODE_ENV
         value: production
       - key: APP_PROFILE
-        value: production
+        value: vercel
       - key: UPLOAD_DIR
         value: /app/uploads
-      - key: MSSQL_PRODUCTION_PASSWORD
+      - key: SUPABASE_DB_HOST
         sync: false
+      - key: SUPABASE_DB_PORT
+        value: "5432"
+      - key: SUPABASE_DB_NAME
+        value: postgres
+      - key: SUPABASE_DB_USER
+        sync: false
+      - key: SUPABASE_DB_PASSWORD
+        sync: false
+      - key: POSTGRES_POOL_MAX
+        value: "5"
       - key: FRONTEND_ORIGIN
         sync: false
       - key: EMPLOYEE_AUTH_SECRET

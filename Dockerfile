@@ -23,11 +23,11 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python deps
-COPY python/requirements.txt ./requirements.txt
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY python/ ./
+COPY . ./
 # Ensure uploads dir exists
 RUN mkdir -p /app/uploads
 

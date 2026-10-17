@@ -3,3 +3,6 @@ venv
 uploads
 *.pyc
 .git
+.env
+.env.*
+db/node_modules
