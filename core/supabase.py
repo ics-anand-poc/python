@@ -25,7 +25,7 @@ def _connection_error_code(err: Exception) -> str:
 def _connection_error_hint(error_code: str) -> str:
     if error_code == "dns_resolution_failed":
         return (
-            "Verify SUPABASE_DB_HOST is the direct db.<project-ref>.supabase.co host, "
+            "Verify database.vercel.host is the direct db.<project-ref>.supabase.co host, "
             "then check DNS and outbound IPv6 connectivity from this machine."
         )
     if error_code == "connection_timeout":
@@ -49,7 +49,7 @@ def health_check() -> dict:
             "configured": False,
             "up": None,
             "error": "missing_database_settings",
-            "hint": "Set SUPABASE_DB_HOST, SUPABASE_DB_NAME, SUPABASE_DB_USER, and SUPABASE_DB_PASSWORD.",
+            "hint": "Set the database.vercel.* connection properties and SUPABASE_DB_PASSWORD runtime secret.",
         }
 
     try:

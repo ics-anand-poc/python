@@ -1,5 +1,5 @@
 # ── TalentScope Python API (FastAPI + pyodbc) ──
-# Build context: repo root (so .env.local is accessible at runtime via volume)
+# Build context: talentscope-python repository root.
 
 FROM python:3.11-slim AS base
 
@@ -28,9 +28,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY python/ ./
-# Copy root .env.example as fallback (real .env.local mounted at runtime)
-COPY .env.example /app/.env.local
-
 # Ensure uploads dir exists
 RUN mkdir -p /app/uploads
 

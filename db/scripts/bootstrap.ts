@@ -6,10 +6,10 @@
  *   npm run db:bootstrap -- --target=remote
  *   npm run db:bootstrap -- --wait            (retry for ~2 min while a fresh container starts)
  */
-import { applyTargetArg, loadProjectEnv } from "./lib/env";
+import { applyTargetArg, loadApplicationProperties } from "./lib/env";
 import { connect, getMssqlConfig, resolveMssqlTarget, sql } from "./lib/mssql";
 
-loadProjectEnv();
+loadApplicationProperties();
 const argv = process.argv.slice(2);
 applyTargetArg(argv);
 

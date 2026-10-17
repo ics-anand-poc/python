@@ -10,11 +10,11 @@
  * Usage: tsx scripts/sync-live-to-dev.ts [--tables=a,b] [--dry-run]
  * Env: MSSQL_* (app database, the target), SYNC_SOURCE_DATABASE (default TalentScope_DB_Live).
  */
-import { applyTargetArg, argValue, loadProjectEnv } from "./lib/env";
+import { applyTargetArg, argValue, loadApplicationProperties } from "./lib/env";
 import { connect, resolveMssqlTarget, sql } from "./lib/mssql";
 import { quoteIdent, selectTables, type TableDef } from "./lib/tables";
 
-loadProjectEnv();
+loadApplicationProperties();
 const argv = process.argv.slice(2);
 applyTargetArg(argv);
 

@@ -12,11 +12,11 @@
  *   npm run db:deploy-data -- --tables=employees,portal_settings
  */
 import { existsSync, readFileSync } from "fs";
-import { applyTargetArg, argValue, loadProjectEnv } from "./lib/env";
+import { applyTargetArg, argValue, loadApplicationProperties } from "./lib/env";
 import { connect, resolveMssqlTarget, sql } from "./lib/mssql";
 import { dataFile, quoteIdent, selectTables, type TableDef } from "./lib/tables";
 
-loadProjectEnv();
+loadApplicationProperties();
 const argv = process.argv.slice(2);
 applyTargetArg(argv);
 

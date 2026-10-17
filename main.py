@@ -11,7 +11,7 @@ import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import env, env_int, frontend_origins
+from core.config import active_profile, env, env_int, frontend_origins
 from core.errors import install_error_handlers
 from core.security import install_traffic_controls
 from core.tokens import require_secret_in_production
@@ -37,6 +37,10 @@ def run_retention() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = env_int("API_THREADS", 24)
+    if active_profile() == "vercel":
+        log.info("Vercel serverless profile: background worker threads are disabled")
+        yield
+        return
     threading.Thread(target=run_retention, daemon=True, name="retention").start()
     question_queue.start_workers()
     monitor.start_db_sampler()

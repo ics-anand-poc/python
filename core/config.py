@@ -1,33 +1,91 @@
 import os
+import re
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 ROOT = Path(__file__).resolve().parents[2]
-
-# In local dev, ROOT is the repository root (two levels above python/core/).
-# In Docker, the app lives at /app/ so parents[2] resolves to / — fall back
-# to the directory that contains main.py (one level up from core/).
 APP_ROOT = Path(__file__).resolve().parents[1]
-_env_candidates = [
-    APP_ROOT / ".env.local",
-    ROOT / ".env.local",
-    APP_ROOT / ".env",
-    ROOT / ".env",
-]
-for _candidate in _env_candidates:
-    if _candidate.is_file():
-        load_dotenv(_candidate, override=False)
-        break
+PROPERTIES_PATH = APP_ROOT / "conf" / "application.properties"
+DOTENV_PATH = APP_ROOT / ".env"
+_PROPERTY_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}$")
+_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-_default_uploads = ROOT / "python" / "uploads"
-if not _default_uploads.parent.is_dir():
-    _default_uploads = Path(__file__).resolve().parents[1] / "uploads"
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or str(_default_uploads)).resolve()
+
+def _read_properties(path: Path) -> dict[str, str]:
+    properties = {}
+    if not path.is_file():
+        return properties
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "!")):
+            continue
+        key, separator, value = stripped.partition("=")
+        if not separator or not key.strip():
+            raise ValueError(f"Invalid property at {path}:{line_number}")
+        properties[key.strip()] = value.strip()
+    return properties
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    values = {}
+    if not path.is_file():
+        return values
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[7:].lstrip()
+        key, separator, value = stripped.partition("=")
+        key = key.strip()
+        if not separator or not _ENV_KEY.fullmatch(key):
+            raise ValueError(f"Invalid environment variable at {path}:{line_number}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+_PROPERTIES = _read_properties(PROPERTIES_PATH)
+_DOTENV = _read_dotenv(DOTENV_PATH)
+
+
+def _property(name: str, default: str = "") -> str:
+    value = os.environ.get(name) or _DOTENV.get(name)
+    if value:
+        return value.strip()
+    value = _PROPERTIES.get(name, default).strip()
+    match = _PROPERTY_REF.fullmatch(value)
+    if match:
+        return (
+            os.environ.get(match.group(1))
+            or _DOTENV.get(match.group(1))
+            or match.group(2)
+            or ""
+        ).strip()
+    return value
+
+
+def active_profile() -> str:
+    profile = (os.environ.get("APP_PROFILE") or _DOTENV.get("APP_PROFILE", "")).strip().lower()
+    if not profile and os.environ.get("VERCEL"):
+        profile = "vercel"
+    if not profile and os.environ.get("NODE_ENV", "").strip().lower() == "production":
+        profile = "production"
+    if not profile:
+        profile = _property("app.profile", "local").lower()
+    if profile not in {"local", "vercel", "production"}:
+        raise ValueError("APP_PROFILE must be local, vercel, or production")
+    return profile
+
+
+_default_uploads = Path("/tmp/talentscope-uploads") if active_profile() == "vercel" else APP_ROOT / "uploads"
+_upload_path = Path(_property("UPLOAD_DIR", str(_default_uploads)))
+UPLOAD_DIR = (_upload_path if _upload_path.is_absolute() else APP_ROOT / _upload_path).resolve()
 
 
 def env(name: str, default: str = "") -> str:
-    return str(os.environ.get(name) or default).strip()
+    return _property(name, default)
 
 
 def env_int(name: str, default: int) -> int:
@@ -54,27 +112,42 @@ def frontend_origins() -> list[str]:
 
 
 def mssql_settings() -> dict:
-    target = (env("MSSQL_TARGET") or "local").lower()
-    prefix = f"MSSQL_{target.upper()}_"
+    profile = active_profile()
+    if profile == "vercel":
+        raise ValueError("The vercel profile uses PostgreSQL, not SQL Server")
+    prefix = f"database.{profile}."
+    legacy_target = "azure" if profile == "production" else "local"
     return {
-        "target": target,
-        "server": env(prefix + "SERVER", "localhost"),
-        "port": env_int(prefix + "PORT", 1433),
-        "database": env(prefix + "DATABASE", "Talentscope"),
-        "user": env(prefix + "USER"),
-        "password": env(prefix + "PASSWORD"),
-        "encrypt": env_bool(prefix + "ENCRYPT", True),
-        "trust_cert": env_bool(prefix + "TRUST_SERVER_CERTIFICATE", target == "local"),
-        "driver": env(prefix + "ODBC_DRIVER") or env("MSSQL_ODBC_DRIVER") or "ODBC Driver 18 for SQL Server",
+        "target": profile,
+        "server": _property(prefix + "host") or env(f"MSSQL_{legacy_target.upper()}_SERVER", "localhost"),
+        "port": int(_property(prefix + "port") or env(f"MSSQL_{legacy_target.upper()}_PORT", "1433")),
+        "database": _property(prefix + "database") or env(f"MSSQL_{legacy_target.upper()}_DATABASE", "Talentscope"),
+        "user": _property(prefix + "user") or env(f"MSSQL_{legacy_target.upper()}_USER"),
+        "password": _property(prefix + "password") or env(f"MSSQL_{legacy_target.upper()}_PASSWORD"),
+        "encrypt": (_property(prefix + "encrypt") or env(f"MSSQL_{legacy_target.upper()}_ENCRYPT", "true")).lower()
+        in {"1", "true", "yes", "on"},
+        "trust_cert": (_property(prefix + "trust_certificate") or
+                       env(f"MSSQL_{legacy_target.upper()}_TRUST_SERVER_CERTIFICATE",
+                           "true" if profile == "local" else "false")).lower() in {"1", "true", "yes", "on"},
+        "driver": _property(prefix + "driver") or env("MSSQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server"),
         "pool_max": env_int("MSSQL_POOL_MAX", 10),
         "pool_wait_s": env_int("MSSQL_POOL_WAIT_S", 20),
     }
 
-def supabase_db_settings() -> dict:
+
+def postgres_settings() -> dict:
+    prefix = "database.vercel."
     return {
-        "host": env("SUPABASE_DB_HOST"),
-        "port": env_int("SUPABASE_DB_PORT", 5432),
-        "database": env("SUPABASE_DB_NAME", "postgres"),
-        "user": env("SUPABASE_DB_USER"),
-        "password": env("SUPABASE_DB_PASSWORD"),
+        "host": _property(prefix + "host") or env("SUPABASE_DB_HOST"),
+        "port": int(_property(prefix + "port") or env("SUPABASE_DB_PORT", "5432")),
+        "database": _property(prefix + "database") or env("SUPABASE_DB_NAME", "postgres"),
+        "user": _property(prefix + "user") or env("SUPABASE_DB_USER"),
+        "password": _property(prefix + "password") or env("SUPABASE_DB_PASSWORD"),
+        "sslmode": _property(prefix + "sslmode", "require"),
+        "pool_max": env_int("POSTGRES_POOL_MAX", 5),
+        "pool_wait_s": env_int("POSTGRES_POOL_WAIT_S", 15),
     }
+
+
+def supabase_db_settings() -> dict:
+    return postgres_settings()

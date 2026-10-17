@@ -56,7 +56,7 @@ def _screening_password() -> str:
 def _supervisor_password() -> str:
     value = env("SUPERVISOR_PASSWORD")
     if not value:
-        raise AdminPasswordNotSetup("Supervisor password not setup in .env.local")
+        raise AdminPasswordNotSetup("Supervisor password is not configured in conf/application.properties or the runtime environment")
     return value
 
 

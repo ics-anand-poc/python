@@ -1,75 +1,71 @@
 # TalentScope Python API
 
-FastAPI backend and its SQL Server schema, migration, and seed-data tooling. This folder is a standalone repository root for deployment to Render.
+FastAPI backend with profile-selected database storage.
 
-## Deploy on Render
+## Database profiles
 
-Create a Render Blueprint from this repository and use `render.yaml`, or create a Docker web service with this folder as the build context and `Dockerfile` as the Dockerfile. The API listens on port `8000`; Render checks `/api/health`.
+The shared profile settings are in [`conf/application.properties`](conf/application.properties). Database connection values can use `${VARIABLE}` placeholders populated from the ignored root `.env` file. Process environment variables take precedence over `.env`; do not commit `.env` or put secrets in the shared properties file.
 
-The API requires an existing, network-accessible Microsoft SQL Server or Azure SQL database. Render does not provision SQL Server for this service. Set the `MSSQL_AZURE_*` variables in the Render service (the blueprint prompts for server, database, user, and password). Configure `FRONTEND_ORIGIN` with the Vercel production origin, and set the auth passwords and secrets before opening the app to users. Set `FACE_MATCH_SERVICE_URL` and `FACE_MATCH_API_KEY` to the separately deployed Face Match service values. `LOCAL_LLM_URL` is optional; the API uses its fallback behavior when it is unavailable.
+| Profile | Selected database | Selection |
+|---|---|---|
+| `local` | SQL Server `TalentScope_DB_Dev` | Default |
+| `vercel` | Supabase PostgreSQL | Set `APP_PROFILE=vercel`; Vercel's `VERCEL` variable also selects it |
+| `production` | SQL Server `TalentScope_DB_Live` | Set `APP_PROFILE=production`; non-Vercel `NODE_ENV=production` also selects it |
 
-The blueprint attaches a persistent disk at `/app/uploads` for uploaded documents and recordings. Keep that disk attached when redeploying.
+The application uses the same `Store` API for SQL Server and PostgreSQL, so API reads and writes follow the selected profile. Locally, set database credentials in `.env` or process environment variables. For Vercel, set `SUPABASE_DB_PASSWORD` in the Vercel project environment settings. For a non-Vercel production deployment, set `MSSQL_PRODUCTION_PASSWORD` in that host's secret settings.
 
-## Database migrations and seeds
+> The configured SQL Server address `10.0.1.7` is private-network space. A hosted service such as Vercel or Render cannot reach it unless you provide private network connectivity or replace it with a reachable SQL Server endpoint.
 
-The `db/` directory contains SQL migrations, seed data, and the Node-based database CLI. Run migrations deliberately from an administrator/developer machine that can reach the target database; deployment does not automatically seed production data.
+## Deploy the API to Vercel
+
+The repository includes `vercel.json` and `api/index.py`. Configure the Vercel project root to this repository directory, set `APP_PROFILE=vercel`, add `SUPABASE_DB_PASSWORD` as a Vercel secret, and deploy. Do not add database credentials to `vercel.json` or `conf/application.properties`.
+
+Vercel's serverless instances do not provide durable local files or reliable long-lived worker threads. The Vercel profile stores uploaded objects in PostgreSQL and disables background threads; queued question generation uses the existing synchronous fallback. Features requiring continuous queue processing or scheduled retention still need a separate worker deployment. The Supabase direct host can also require IPv6, which may not be available on every Vercel plan/runtime.
+
+## PostgreSQL schema
+
+Apply the PostgreSQL migrations before serving application requests with the `vercel` profile. The migration runner applies the numbered scripts in order, tracks checksums, and rejects edits to already-applied migrations:
 
 ```powershell
-Copy-Item .env.example .env
-# Edit .env with the database target and credentials.
-cd db
-npm ci
-npm run db:status
-npm run db:migrate
+$env:APP_PROFILE = "vercel"
+.\venv\Scripts\python.exe scripts\migrate_postgres.py
 ```
 
-Seed JSON files are excluded from Git and Docker because they contain personal data. Supply approved, sanitized seed files privately before running `npm run db:deploy-data` or `npm run db:azure`. Schema-only Azure migrations use `npm run db:migrate -- --target=azure`.
+It connects over TLS to the direct Supabase database host in `conf/application.properties`. The Supabase direct endpoint may require IPv6; if the running host cannot resolve or route to it, `/api/health` and the migration command will report that connection failure. For an IPv4-only Vercel runtime, use a Supabase IPv4-capable endpoint or the supported Supavisor connection details and update the profile settings accordingly.
+
+The PostgreSQL migrations create the application tables and convert JSON-backed application columns to `JSONB`. Existing SQL Server rows are not copied automatically; use an approved, reviewed data-transfer process before switching a live deployment to PostgreSQL.
 
 ## Local development
 
-Install `requirements.txt`, install Microsoft's ODBC Driver 18 for SQL Server, and run:
+Install the requirements and Microsoft's ODBC Driver 18 for SQL Server, then start the API:
 
 ```powershell
+$env:APP_PROFILE = "local"
+$env:MSSQL_LOCAL_PASSWORD = "<development SQL password>"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 uvicorn main:app --port 8000 --reload
 ```
 
-### Supabase PostgreSQL health check
+To test the selected database and the optional Supabase health probe, request:
 
-The API's application data store remains SQL Server. `/api/health` can additionally verify a Supabase PostgreSQL connection using the direct database credentials in the ignored repository-root `.env` file:
-
-```dotenv
-SUPABASE_DB_HOST=<Supabase database host>
-SUPABASE_DB_PORT=5432
-SUPABASE_DB_NAME=postgres
-SUPABASE_DB_USER=postgres
-SUPABASE_DB_PASSWORD=<Supabase database password>
+```powershell
+Invoke-RestMethod http://localhost:8000/api/health
 ```
 
-The Supabase URL, anon key, and service-role key are not needed for this direct PostgreSQL probe. After setting these values and restarting the API, check for `"supabase": { "configured": true, "up": true }` in `/api/health`. When the database settings are missing, the response reports `"configured": false` and `"up": null`; a failed connection reports `"up": false` with an actionable `error` code and writes a sanitized diagnostic to the API log. Install dependencies from `requirements.txt` to provide the `psycopg` driver.
+`database.up` is the connection used for application data. `supabase` is the independent Supabase PostgreSQL probe. In the `vercel` profile, both checks target Supabase.
 
-To check the Supabase Auth health endpoint and direct PostgreSQL connection independently of the API, set `NEXT_PUBLIC_SUPABASE_URL`, either `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and the `SUPABASE_DB_*` variables in `.env`, then run:
+The standalone diagnostic checks the Supabase Auth endpoint and runs `SELECT 1` using the values in `conf/application.properties`:
 
 ```powershell
 .\venv\Scripts\python.exe scripts\check_supabase_connection.py
 ```
 
-The script validates the REST response and executes `SELECT 1` against the direct database connection. It never prints the API key or database password.
+## Existing SQL Server tooling and Render deployment
 
-For an IPv4-compatible Supavisor session-pooler check, copy the exact host, port, and username from Supabase **Dashboard → Connect → Session pooler** into `.env` as `SUPABASE_POOLER_HOST`, `SUPABASE_POOLER_PORT`, and `SUPABASE_POOLER_USER`. Keep `SUPABASE_DB_NAME` and `SUPABASE_DB_PASSWORD` set to the database name and password, then run:
+`db/mssql/migrations` and the Node CLI remain available for the local and production SQL Server profiles. The SQL Server migration CLI reads profile settings from `conf/application.properties`; use `npm run db:migrate -- --target=local` or `npm run db:migrate -- --target=azure`.
 
-```powershell
-.\venv\Scripts\python.exe scripts\check_supabase_pooler.py
-```
+The Render Blueprint selects the `production` profile. Configure `MSSQL_PRODUCTION_PASSWORD` and the application/auth secrets in the Render dashboard. The SQL Server host must be reachable from Render.
 
-The pooler username differs from the direct database username; use the full username shown by Supabase rather than assuming it is `postgres`. The script connects with SSL and runs `SELECT 1`.
-
-#### Troubleshooting direct Supabase connections
-
-- If the endpoint reports `psycopg_not_installed`, activate the same virtual environment used to run Uvicorn and install `requirements.txt`. On a managed Windows network where pip reports a certificate verification error, use the organization's approved CA configuration or package index; do not disable TLS verification. If pip then receives HTTP 403 for `files.pythonhosted.org`, ask the network administrator to allow that package host or configure the approved mirror. Restart Uvicorn after installation.
-- Use the direct host `db.<project-ref>.supabase.co` and port `5432` from Supabase's Direct connection details. If health reports `dns_resolution_failed`, check that the project reference and host are exact, then check DNS resolution and outbound IPv6 routing on the machine running the API; Supabase's direct endpoint may resolve only to IPv6. If that network has no IPv6 route, ask the network administrator to enable IPv6 or ask Supabase support about direct IPv4 connectivity for the project. The Session Pooler is a different connection mode and is not used by this app's direct-connection probe.
-- Confirm the route independently with the Supabase-provided `psql` connection details and `SELECT 1`. Once `/api/health` reports `configured: true` and `up: true`, the probe is verified.
-
-For UI/API endpoint integration checks, keep the UI checkout beside this repository or set `TALENTSCOPE_UI_DIR` to its path, then run `python scripts/check_api_links.py`.
+For UI/API integration checks, keep the UI checkout beside this repository or set `TALENTSCOPE_UI_DIR` to its path, then run `python scripts/check_api_links.py`.

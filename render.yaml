@@ -15,23 +15,11 @@ services:
         value: "1"
       - key: NODE_ENV
         value: production
+      - key: APP_PROFILE
+        value: production
       - key: UPLOAD_DIR
         value: /app/uploads
-      - key: MSSQL_TARGET
-        value: azure
-      - key: MSSQL_AZURE_PORT
-        value: "1433"
-      - key: MSSQL_AZURE_ENCRYPT
-        value: "true"
-      - key: MSSQL_AZURE_TRUST_SERVER_CERTIFICATE
-        value: "false"
-      - key: MSSQL_AZURE_SERVER
-        sync: false
-      - key: MSSQL_AZURE_DATABASE
-        sync: false
-      - key: MSSQL_AZURE_USER
-        sync: false
-      - key: MSSQL_AZURE_PASSWORD
+      - key: MSSQL_PRODUCTION_PASSWORD
         sync: false
       - key: FRONTEND_ORIGIN
         sync: false

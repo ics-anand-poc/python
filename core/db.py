@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Union
 
-from core.config import mssql_settings
+from core.config import active_profile, mssql_settings, postgres_settings
 
 JSON_COLUMNS = {
     "employees": {"badges"},
@@ -194,6 +194,16 @@ class MssqlStore(Store):
         return ";".join(parts)
 
     def _connect(self):
+        missing = [key for key in ("user", "password") if not self.settings.get(key)]
+        if missing:
+            profile = self.settings.get("target", active_profile())
+            password_env = "MSSQL_AZURE_PASSWORD" if profile == "production" else "MSSQL_LOCAL_PASSWORD"
+            raise RuntimeError(
+                f"SQL Server credentials are incomplete for the {profile} profile; "
+                f"configure database.{profile}.user and database.{profile}.password "
+                f"(or set {password_env})."
+            )
+
         import pyodbc
 
         conn = pyodbc.connect(self._conn_string(), autocommit=True)
@@ -407,6 +417,292 @@ class MssqlStore(Store):
         return self.first(table, {k: data[k] for k in keys}) or decode_row(table, data)
 
 
+class PostgresStore(Store):
+    def __init__(self, settings: Optional[dict] = None):
+        self.settings = settings or postgres_settings()
+        self.pool_max = max(1, int(self.settings.get("pool_max") or 5))
+        self.pool_wait_s = float(self.settings.get("pool_wait_s") or 15)
+        self.slots = threading.BoundedSemaphore(self.pool_max)
+        self.idle: list = []
+        self.idle_lock = threading.Lock()
+
+    def _connect(self):
+        import psycopg
+        from psycopg.rows import dict_row
+
+        settings = self.settings
+        return psycopg.connect(
+            host=settings["host"],
+            port=settings["port"],
+            dbname=settings["database"],
+            user=settings["user"],
+            password=settings["password"],
+            sslmode=settings["sslmode"],
+            connect_timeout=10,
+            autocommit=True,
+            row_factory=dict_row,
+        )
+
+    def _acquire(self):
+        if not self.slots.acquire(timeout=self.pool_wait_s):
+            raise RuntimeError("Database connection pool exhausted")
+        try:
+            with self.idle_lock:
+                connection = self.idle.pop() if self.idle else None
+            if connection is not None and connection.closed:
+                connection.close()
+                connection = None
+            return connection or self._connect()
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def _release(self, connection, broken: bool = False) -> None:
+        try:
+            if broken or connection.closed:
+                connection.close()
+            else:
+                with self.idle_lock:
+                    self.idle.append(connection)
+        finally:
+            self.slots.release()
+
+    def _run(self, sql: str, params: tuple = (), fetch: bool = False):
+        import psycopg
+
+        def transient(error) -> bool:
+            state = getattr(error, "sqlstate", None) or ""
+            return state.startswith("08") or isinstance(error, psycopg.OperationalError)
+
+        for attempt in (0, 1):
+            connection = self._acquire()
+            broken = False
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(sql.replace("?", "%s"), params)
+                    return cursor.fetchall() if fetch else cursor.rowcount
+            except psycopg.Error as error:
+                broken = transient(error)
+                if attempt == 0 and broken:
+                    continue
+                raise
+            finally:
+                self._release(connection, broken)
+
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        return [decode_row("", row) for row in self._run(sql, params, True)]
+
+    def execute(self, sql: str, params: tuple = ()) -> int:
+        return int(self._run(sql, params, False))
+
+    def ping(self) -> bool:
+        try:
+            return bool(self._run("SELECT 1 AS ok", fetch=True))
+        except Exception:
+            return False
+
+    def pool_stats(self) -> dict:
+        with self.idle_lock:
+            available = len(self.idle)
+        return {
+            "max": self.pool_max,
+            "idle": available,
+            "inUse": max(self.pool_max - self.slots._value - available, 0),
+        }
+
+    @staticmethod
+    def _ident(name: str) -> str:
+        if not IDENT_RE.match(name):
+            raise ValueError(f"Invalid identifier: {name}")
+        return f'"{name}"'
+
+    @staticmethod
+    def _encode(column: str, value: Any, json_cols: set):
+        if value is None:
+            return None
+        if column in json_cols or isinstance(value, (dict, list)):
+            import json
+            from psycopg.types.json import Jsonb
+
+            if column in json_cols and isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            return Jsonb(value)
+        if isinstance(value, str) and UUID_VALUE_RE.match(value):
+            return uuid.UUID(value)
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, str) and column.endswith("_date") and re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        if isinstance(value, str) and (column.endswith("_at") or column.endswith("_date")) and ISO_VALUE_RE.match(value):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return value
+        return value
+
+    def _table(self, table: str) -> str:
+        return f'"public".{self._ident(table)}'
+
+    def _where(self, table: str, where: list[tuple]) -> tuple[str, list]:
+        json_cols = JSON_COLUMNS.get(table, set())
+        clauses, params = [], []
+        for col, op, val in where:
+            column = self._ident(col)
+            if op == "is_null":
+                clauses.append(f"{column} IS NULL")
+            elif op == "not_null":
+                clauses.append(f"{column} IS NOT NULL")
+            elif op in ("in", "not_in"):
+                values = list(val or [])
+                if not values:
+                    clauses.append("FALSE" if op == "in" else "TRUE")
+                    continue
+                marks = ", ".join("%s" for _ in values)
+                clauses.append(f"{column} {'IN' if op == 'in' else 'NOT IN'} ({marks})")
+                params.extend(self._encode(col, value, set()) for value in values)
+            elif op in ("like", "ilike"):
+                clauses.append(f"{column} {'ILIKE' if op == 'ilike' else 'LIKE'} %s")
+                params.append(val)
+            elif op in OPS:
+                clauses.append(f"{column} {OPS[op]} %s")
+                params.append(self._encode(col, val, json_cols))
+            else:
+                raise ValueError(f"Unsupported operator: {op}")
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+    def _split_big_in(self, where: list[tuple]):
+        for i, (col, op, val) in enumerate(where):
+            if op == "in" and len(val or []) > MAX_IN:
+                values = list(val)
+                for start in range(0, len(values), MAX_IN):
+                    yield where[:i] + [(col, "in", values[start:start + MAX_IN])] + where[i + 1:]
+                return
+        yield where
+
+    def select(self, table, where=None, columns=None, order=None, limit=None, offset=None):
+        normalized = normalize_where(where)
+        chunks = list(self._split_big_in(normalized))
+        if len(chunks) > 1:
+            rows = []
+            for chunk in chunks:
+                rows.extend(self.select(table, chunk, columns, order))
+            for col, desc in reversed(normalize_order(order)):
+                rows.sort(key=lambda row: (row.get(col) is None, row.get(col)), reverse=desc)
+            start = offset or 0
+            return rows[start:start + limit] if limit is not None else rows[start:]
+
+        cols = normalize_columns(columns)
+        col_sql = ", ".join(self._ident(col) for col in cols) if cols else "*"
+        where_sql, params = self._where(table, normalized)
+        order_items = normalize_order(order)
+        order_sql = ", ".join(
+            f"{self._ident(col)} {'DESC' if desc else 'ASC'}" for col, desc in order_items
+        )
+        sql = f"SELECT {col_sql} FROM {self._table(table)}{where_sql}"
+        if order_sql:
+            sql += f" ORDER BY {order_sql}"
+        if limit is not None:
+            sql += " LIMIT %s"
+            params.append(int(limit))
+        if offset is not None:
+            sql += " OFFSET %s"
+            params.append(int(offset))
+        return [decode_row(table, row) for row in self._run(sql, tuple(params), True)]
+
+    def count(self, table, where=None):
+        where_sql, params = self._where(table, normalize_where(where))
+        rows = self._run(
+            f"SELECT COUNT(*) AS n FROM {self._table(table)}{where_sql}", tuple(params), True
+        )
+        return int(rows[0]["n"])
+
+    def _insert_one(self, table: str, row: dict) -> dict:
+        data = dict(row)
+        if table != "portal_settings" and not data.get("id"):
+            data["id"] = str(uuid.uuid4())
+        cols = list(data)
+        params = tuple(
+            self._encode(col, data[col], JSON_COLUMNS.get(table, set())) for col in cols
+        )
+        sql = (
+            f"INSERT INTO {self._table(table)} "
+            f"({', '.join(self._ident(col) for col in cols)}) "
+            f"VALUES ({', '.join('%s' for _ in cols)}) RETURNING *"
+        )
+        rows = self._run(sql, params, True)
+        return decode_row(table, rows[0]) if rows else decode_row(table, data)
+
+    def insert(self, table, rows):
+        items = [rows] if isinstance(rows, dict) else list(rows)
+        return [self._insert_one(table, row) for row in items]
+
+    def update(self, table, values, where):
+        if not values:
+            return 0
+        json_cols = JSON_COLUMNS.get(table, set())
+        columns = list(values)
+        set_sql = ", ".join(f"{self._ident(col)} = %s" for col in columns)
+        set_params = [
+            self._encode(col, values[col], json_cols) for col in columns
+        ]
+        total = 0
+        for chunk in self._split_big_in(normalize_where(where)):
+            where_sql, params = self._where(table, chunk)
+            total += max(
+                self.execute(
+                    f"UPDATE {self._table(table)} SET {set_sql}{where_sql}",
+                    tuple(set_params + params),
+                ),
+                0,
+            )
+        return total
+
+    def delete(self, table, where):
+        total = 0
+        for chunk in self._split_big_in(normalize_where(where)):
+            where_sql, params = self._where(table, chunk)
+            total += max(
+                self.execute(f"DELETE FROM {self._table(table)}{where_sql}", tuple(params)),
+                0,
+            )
+        return total
+
+    def upsert(self, table, row, key):
+        keys = [key] if isinstance(key, str) else list(key)
+        data = dict(row)
+        if table != "portal_settings" and not data.get("id"):
+            data["id"] = str(uuid.uuid4())
+        columns = list(data)
+        key_sql = ", ".join(self._ident(col) for col in keys)
+        updatable = [col for col in columns if col not in keys]
+        if updatable:
+            conflict_sql = "DO UPDATE SET " + ", ".join(
+                f"{self._ident(col)} = EXCLUDED.{self._ident(col)}" for col in updatable
+            )
+        else:
+            conflict_sql = "DO NOTHING"
+        params = tuple(
+            self._encode(col, data[col], JSON_COLUMNS.get(table, set())) for col in columns
+        )
+        sql = (
+            f"INSERT INTO {self._table(table)} "
+            f"({', '.join(self._ident(col) for col in columns)}) "
+            f"VALUES ({', '.join('%s' for _ in columns)}) "
+            f"ON CONFLICT ({key_sql}) {conflict_sql} RETURNING *"
+        )
+        rows = self._run(sql, params, True)
+        if rows:
+            return decode_row(table, rows[0])
+        return self.first(table, {col: data[col] for col in keys}) or decode_row(table, data)
+
+
 def _match(row: dict, where: list[tuple]) -> bool:
     for col, op, val in where:
         cur = row.get(col)
@@ -523,7 +819,7 @@ def get_store() -> Store:
     if _store is None:
         with _store_lock:
             if _store is None:
-                _store = MssqlStore()
+                _store = PostgresStore() if active_profile() == "vercel" else MssqlStore()
     return _store
 
 

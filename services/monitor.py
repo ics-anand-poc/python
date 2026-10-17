@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.config import UPLOAD_DIR, env
-from core.db import MssqlStore, get_store
+from core.db import MssqlStore, PostgresStore, get_store
 from services import llm, question_queue
 
 CACHE_S = 8.0
@@ -34,7 +34,10 @@ def section(fn: Callable[[], Any]) -> dict:
 
 
 def rows(sql: str) -> list[dict]:
-    return get_store().query("SET NOCOUNT ON;\n" + sql)
+    store = get_store()
+    if isinstance(store, MssqlStore):
+        sql = "SET NOCOUNT ON;\n" + sql
+    return store.query(sql)
 
 
 def read_json(name: str):
@@ -75,7 +78,7 @@ def app_runtime() -> dict:
 
     store = get_store()
     return {"llm": llm.stats(), "traffic": security.traffic_snapshot(), "questionQueue": question_queue.snapshot(),
-            "dbPool": store.pool_stats() if isinstance(store, MssqlStore) else None}
+            "dbPool": store.pool_stats() if isinstance(store, (MssqlStore, PostgresStore)) else None}
 
 
 def collect_vm() -> dict:
@@ -133,6 +136,17 @@ def pool_info() -> dict:
     store = get_store()
     stats = store.pool_stats()
     settings = store.settings
+    if isinstance(store, PostgresStore):
+        return {
+            "size": stats["idle"] + stats["inUse"],
+            "available": stats["idle"],
+            "pending": None,
+            "borrowed": stats["inUse"],
+            "max": stats["max"],
+            "server": settings["host"],
+            "port": settings["port"],
+            "encrypt": settings["sslmode"] != "disable",
+        }
     return {"size": stats["idle"] + stats["inUse"], "available": stats["idle"], "pending": None, "borrowed": stats["inUse"],
             "max": stats["max"], "server": settings["server"], "port": settings["port"], "encrypt": settings["encrypt"]}
 

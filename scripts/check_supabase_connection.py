@@ -1,17 +1,16 @@
 """Check the Supabase Auth API and direct PostgreSQL database connection."""
 
 import json
-import os
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
-
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env", override=False)
+sys.path.insert(0, str(ROOT))
+
+from core.config import env, supabase_db_settings
 
 
 def check_supabase_api(project_url: str, anon_key: str) -> dict:
@@ -71,35 +70,32 @@ def check_direct_database(host: str, port: int, database: str, user: str, passwo
 
 
 def main() -> int:
-    names = (
-        "NEXT_PUBLIC_SUPABASE_URL",
-        "SUPABASE_DB_HOST",
-        "SUPABASE_DB_PORT",
-        "SUPABASE_DB_NAME",
-        "SUPABASE_DB_USER",
-        "SUPABASE_DB_PASSWORD",
-    )
-    missing = [name for name in names if not os.environ.get(name)]
-    if not (os.environ.get("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")):
+    settings = supabase_db_settings()
+    names = {
+        "SUPABASE_DB_HOST": settings["host"],
+        "SUPABASE_DB_PORT": settings["port"],
+        "SUPABASE_DB_NAME": settings["database"],
+        "SUPABASE_DB_USER": settings["user"],
+        "SUPABASE_DB_PASSWORD": settings["password"],
+    }
+    missing = [name for name, value in names.items() if not value]
+    project_url = env("NEXT_PUBLIC_SUPABASE_URL")
+    api_key = env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY") or env("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    if not project_url:
+        missing.append("NEXT_PUBLIC_SUPABASE_URL")
+    if not api_key:
         missing.append("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY")
     if missing:
-        print(json.dumps({"ok": False, "error": "missing_environment_variables", "missing": missing}, indent=2))
+        print(json.dumps({"ok": False, "error": "missing_properties_or_environment_overrides", "missing": missing}, indent=2))
         return 2
 
-    try:
-        port = int(os.environ["SUPABASE_DB_PORT"])
-    except ValueError:
-        print(json.dumps({"ok": False, "error": "SUPABASE_DB_PORT_must_be_an_integer"}, indent=2))
-        return 2
-
-    api_key = os.environ.get("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY") or os.environ["NEXT_PUBLIC_SUPABASE_ANON_KEY"]
-    api = check_supabase_api(os.environ["NEXT_PUBLIC_SUPABASE_URL"], api_key)
+    api = check_supabase_api(project_url, api_key)
     database = check_direct_database(
-        os.environ["SUPABASE_DB_HOST"],
-        port,
-        os.environ["SUPABASE_DB_NAME"],
-        os.environ["SUPABASE_DB_USER"],
-        os.environ["SUPABASE_DB_PASSWORD"],
+        settings["host"],
+        settings["port"],
+        settings["database"],
+        settings["user"],
+        settings["password"],
     )
     result = {"ok": api["ok"] and database["ok"], "supabase_api": api, "direct_postgres": database}
     print(json.dumps(result, indent=2))

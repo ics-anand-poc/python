@@ -3,8 +3,15 @@ import sql from "mssql";
 export type MssqlTarget = "local" | "remote" | "azure";
 
 export function resolveMssqlTarget(): MssqlTarget {
-  const raw = String(process.env.MSSQL_TARGET || "local").trim().toLowerCase();
-  return raw === "remote" || raw === "azure" ? raw : "local";
+  const raw = String(
+    process.env.MSSQL_TARGET ||
+      (process.env.APP_PROFILE === "production" ? "azure" : process.env.APP_PROFILE === "vercel" ? "vercel" : "local")
+  ).trim().toLowerCase();
+  if (raw === "vercel") throw new Error("The vercel profile uses PostgreSQL; SQL Server migration commands are not available for it.");
+  if (raw === "production") return "azure";
+  if (raw === "remote") return "local";
+  if (raw === "local" || raw === "azure") return raw;
+  throw new Error(`Unsupported MSSQL target: ${raw}`);
 }
 
 function envPick(keys: string[], fallback = ""): string {

@@ -1,6 +1,6 @@
 # TalentScope Database (MS SQL Server)
 
-This directory contains the database schema migrations, baseline datasets, and deployment scripts for **Microsoft SQL Server** (local, remote, or Azure SQL).
+This directory contains the database schema migrations, baseline datasets, and deployment scripts for **Microsoft SQL Server**. PostgreSQL application migrations for the Supabase profile are in `postgres/migrations/`.
 
 ---
 
@@ -19,13 +19,13 @@ This directory contains the database schema migrations, baseline datasets, and d
 
 ## ⚙️ Target Environments
 
-The database tooling connects to the target specified by `MSSQL_TARGET` in [`.env.local`](file:///../.env.local) (or `--target=<name>` on CLI):
+The database tooling reads the connection settings from `../conf/application.properties`. The active `app.profile` selects the default target; `--target=<name>` overrides it for a command:
 
-| Target | Env Prefix | Description |
+| Target | Properties | Description |
 |---|---|---|
-| `local` | `MSSQL_LOCAL_*` | Local MS SQL Server (e.g. `localhost:1433`, default) |
-| `azure` | `MSSQL_AZURE_*` | Microsoft Azure SQL Database (TLS encryption enforced) |
-| `remote` | `MSSQL_REMOTE_*` | Company staging / dev SQL Server |
+| `local` | `database.local.*` | SQL Server development database |
+| `azure` | `database.production.*` | SQL Server live database |
+| `vercel` | — | Supabase PostgreSQL; use `scripts/migrate_postgres.py` instead |
 
 ---
 
@@ -74,9 +74,9 @@ npm run db:azure
 ## 🛠️ Database Troubleshooting
 
 ### 1. `Login failed for user '...'`
-- **Cause**: Invalid username or password in `.env.local` or SQL Server is in Windows Authentication-only mode.
+- **Cause**: Invalid username or password in `conf/application.properties` or SQL Server is in Windows Authentication-only mode.
 - **Fix**:
-  1. Verify `MSSQL_LOCAL_USER` and `MSSQL_LOCAL_PASSWORD` in `.env.local`.
+  1. Verify `database.local.user` in `conf/application.properties` and set `MSSQL_LOCAL_PASSWORD` as a runtime secret.
   2. In SQL Server Management Studio (SSMS), right-click your Server -> **Properties** -> **Security** -> Enable **SQL Server and Windows Authentication mode**.
   3. Under **Security** -> **Logins**, ensure the user exists, is enabled, and has `db_owner` role on the `Talentscope` database.
 
@@ -90,7 +90,7 @@ npm run db:azure
 
 ### 3. `The certificate chain was issued by an authority that is not trusted`
 - **Cause**: Self-signed SSL certificate on local SQL Server.
-- **Fix**: Set `MSSQL_LOCAL_TRUST_SERVER_CERTIFICATE=true` in `.env.local`.
+- **Fix**: Set `database.local.trust_certificate=true` in `conf/application.properties`.
 
 ### 4. `Migration Checksum Mismatch`
 - **Cause**: An existing `.sql` migration file was modified after it was already applied to the database.
