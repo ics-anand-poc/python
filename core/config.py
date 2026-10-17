@@ -67,13 +67,15 @@ def _property(name: str, default: str = "") -> str:
 
 
 def active_profile() -> str:
-    profile = (os.environ.get("APP_PROFILE") or _DOTENV.get("APP_PROFILE", "")).strip().lower()
+    profile = os.environ.get("APP_PROFILE", "").strip().lower()
     if not profile and os.environ.get("VERCEL"):
         profile = "vercel"
     if not profile and os.environ.get("NODE_ENV", "").strip().lower() == "production":
         profile = "production"
     if not profile:
-        profile = _property("app.profile", "local").lower()
+        profile = _DOTENV.get("APP_PROFILE", "").strip().lower()
+    if not profile:
+        raise ValueError("Set APP_PROFILE to local, vercel, or production in the environment or root .env file")
     if profile not in {"local", "vercel", "production"}:
         raise ValueError("APP_PROFILE must be local, vercel, or production")
     return profile

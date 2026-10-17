@@ -52,7 +52,12 @@ export function loadApplicationProperties(root = resolve(process.cwd(), "..")): 
   const properties = readProperties(root);
   const dotenv = readDotenv(root);
   const activeProfile = process.env.APP_PROFILE
-    || (process.env.VERCEL ? "vercel" : process.env.NODE_ENV === "production" ? "production" : properties.get("app.profile") || "local");
+    || (process.env.VERCEL ? "vercel" : process.env.NODE_ENV === "production" ? "production" : "")
+    || dotenv.get("APP_PROFILE")
+    || "";
+  if (!["local", "vercel", "production"].includes(activeProfile.toLowerCase())) {
+    throw new Error("Set APP_PROFILE to local, vercel, or production in the environment or root .env file");
+  }
 
   for (const [profile, target] of [["local", "LOCAL"], ["production", "AZURE"]] as const) {
     const prefix = `database.${profile}.`;

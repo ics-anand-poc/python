@@ -19,7 +19,7 @@ This directory contains the database schema migrations, baseline datasets, and d
 
 ## ⚙️ Target Environments
 
-The database tooling reads the connection settings from `../conf/application.properties`. The active `app.profile` selects the default target; `--target=<name>` overrides it for a command:
+The database tooling reads connection settings from `../conf/application.properties`. Set `APP_PROFILE` in the process environment or root `.env` to select the default target; `--target=<name>` overrides it for a command:
 
 | Target | Properties | Description |
 |---|---|---|

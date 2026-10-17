@@ -4,11 +4,11 @@ FastAPI backend with profile-selected database storage.
 
 ## Database profiles
 
-The shared profile settings are in [`conf/application.properties`](conf/application.properties). Database connection values can use `${VARIABLE}` placeholders populated from the ignored root `.env` file. Process environment variables take precedence over `.env`; do not commit `.env` or put secrets in the shared properties file.
+The shared database connection settings are in [`conf/application.properties`](conf/application.properties). Select the database with `APP_PROFILE=local`, `APP_PROFILE=vercel`, or `APP_PROFILE=production` in the process environment or ignored root `.env` file. The profile is not selected from `application.properties`. Database connection values can use `${VARIABLE}` placeholders populated from `.env`; process environment variables take precedence. Do not commit `.env` or put secrets in the shared properties file.
 
 | Profile | Selected database | Selection |
 |---|---|---|
-| `local` | SQL Server `TalentScope_DB_Dev` | Default |
+| `local` | SQL Server `TalentScope_DB_Dev` | Set `APP_PROFILE=local` (recommended in local `.env`) |
 | `vercel` | Supabase PostgreSQL | Set `APP_PROFILE=vercel`; Vercel's `VERCEL` variable also selects it |
 | `production` | SQL Server `TalentScope_DB_Live` | Set `APP_PROFILE=production`; non-Vercel `NODE_ENV=production` also selects it |
 
