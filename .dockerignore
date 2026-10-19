@@ -1,8 +1,11 @@
 __pycache__
+.pytest_cache
 venv
+.venv
 uploads
 *.pyc
 .git
-.env
-.env.*
-db/node_modules
+node_modules
+.env*
+db/.env*
+db/mssql/data/*.json

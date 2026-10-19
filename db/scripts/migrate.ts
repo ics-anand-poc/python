@@ -8,11 +8,11 @@
 import { createHash } from "crypto";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { applyTargetArg, loadApplicationProperties } from "./lib/env";
+import { applyTargetArg, loadProjectEnv } from "./lib/env";
 import { connect, resolveMssqlTarget, sql } from "./lib/mssql";
 import { MIGRATIONS_DIR } from "./lib/tables";
 
-loadApplicationProperties();
+loadProjectEnv();
 const argv = process.argv.slice(2);
 applyTargetArg(argv);
 

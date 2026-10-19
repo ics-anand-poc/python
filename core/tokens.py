@@ -23,17 +23,17 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
 
 
-def sign_token(employee_id: str, expires_in_ms: int = 7 * 24 * 60 * 60 * 1000, email: Optional[str] = None) -> str:
-    claims = {"employee_id": employee_id.strip().upper(), "exp": int(time.time() * 1000) + expires_in_ms}
-    if email:
-        claims["email"] = email.strip().lower()
-    payload = json.dumps(claims, separators=(",", ":"))
+def sign_token(employee_id: str, expires_in_ms: int = 7 * 24 * 60 * 60 * 1000) -> str:
+    payload = json.dumps(
+        {"employee_id": employee_id.strip().upper(), "exp": int(time.time() * 1000) + expires_in_ms},
+        separators=(",", ":"),
+    )
     encoded = _b64url_encode(payload.encode("utf-8"))
     signature = hmac.new(_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{encoded}.{signature}"
 
 
-def token_claims(token: Optional[str]) -> Optional[dict]:
+def verify_token(token: Optional[str]) -> Optional[str]:
     if not token or not isinstance(token, str) or "." not in token:
         return None
     encoded, _, signature = token.partition(".")
@@ -48,17 +48,7 @@ def token_claims(token: Optional[str]) -> Optional[dict]:
         return None
     if time.time() * 1000 > float(data.get("exp", 0)):
         return None
-    return data
-
-
-def verify_token(token: Optional[str]) -> Optional[str]:
-    claims = token_claims(token)
-    return claims.get("employee_id") if claims else None
-
-
-def token_email(token: Optional[str]) -> Optional[str]:
-    claims = token_claims(token)
-    return (claims or {}).get("email") or None
+    return data.get("employee_id")
 
 
 def require_secret_in_production() -> None:

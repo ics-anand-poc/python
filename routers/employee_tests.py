@@ -8,9 +8,8 @@ from core.auth import employee_id_from_request, require_employee
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.validation import as_path_id
-from services import accounts, audit, employee_tests as et, question_bank, storage, test_backup, test_video
+from services import accounts, audit, employee_tests as et, question_bank, storage, test_video
 from services.products import format_topic_title_for_display
-from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
 router = APIRouter(prefix="/api/employee/tests", tags=["employee-tests"])
@@ -61,8 +60,6 @@ def get_test(test_id: str, employee: dict = Depends(require_employee)):
         test = _owned(test_id, employee)
         if not test:
             return json_error(404, "Not found")
-        if et.finalize_if_expired(test):
-            test = _owned(test_id, employee)
         topic = test.get("topic_id")
         if topic == accounts.PRODUCT_ASSESSMENT_TOPIC_ID and not accounts.is_product_qb_employee(employee):
             return json_error(403, "Forbidden")
@@ -76,7 +73,6 @@ def get_test(test_id: str, employee: dict = Depends(require_employee)):
         if test.get("status") == "completed":
             attempts = get_store().select("test_attempts", {"test_id": test["id"]},
                                           ["id", "question_id", "selected_option_index", "is_correct", "time_taken_seconds", "created_at"])
-        write_log("employee", "EMPLOYEE_TEST_OPENED", "success", f"{employee['employee_id']} opened test {test['id']} ({test.get('topic_title') or topic})")
         return {"test": _title(test), "questions": questions, "attempts": attempts, "has_recording": test_video.exists(test["id"])}
     except Exception as err:
         return public_error(err, "Internal error")
@@ -91,8 +87,6 @@ def patch_test(test_id: str, body: dict = Body(default_factory=dict), employee: 
         problem = et.can_patch_progress(test, body.get("status"))
         if problem:
             return json_error(409, problem)
-        if body.get("status") == "in_progress" and (test.get("status") or "pending") == "pending" and body.get("camera_granted") is not True:
-            return json_error(400, "Camera access is required to start the assessment.")
         updates = {k: body[k] for k in ("in_progress", "current_question_index", "status", "started_at") if k in body}
         if body.get("status") == "in_progress" and body.get("started_at"):
             updates["proctoring"] = et.mark_session_started(et.normalize_proctoring(test.get("proctoring")))
@@ -164,11 +158,28 @@ def submit_test(test_id: str, body: dict = Body(default_factory=dict), employee:
         ok, error, code = et.can_submit(test)
         if not auto and not ok and code == "NOT_STARTED":
             return json_error(400, error)
-        result = et.finalize(test, accounts.employee_uuid(employee["employee_id"]), answers, auto)
-        test_backup.snapshot(test["id"], "submit")
-        correct, total, accuracy = result["correct"], result["total"], result["accuracy"]
-        write_log("employee", "EMPLOYEE_TEST_SUBMITTED", "success",
-                  f"{employee['employee_id']} submitted test {test['id']}: {correct}/{total} ({accuracy}%){' [auto-submitted]' if auto else ''}")
+        store = get_store()
+        questions = et.questions_for(test["id"])
+        correct_map = {str(q["id"]): q["correct_option_index"] for q in questions}
+        emp_uuid = accounts.employee_uuid(employee["employee_id"])
+        attempts = [
+            {"test_id": test["id"], "employee_id": emp_uuid, "question_id": a["question_id"],
+             "selected_option_index": a.get("selected_index"),
+             "is_correct": correct_map[str(a["question_id"])] == a.get("selected_index"),
+             "time_taken_seconds": int(a.get("time_seconds") or 0), "session_key": test["id"][:8]}
+            for a in answers if isinstance(a, dict) and str(a.get("question_id")) in correct_map
+            and isinstance(a.get("selected_index"), int)
+        ]
+        if attempts:
+            store.delete("test_attempts", {"test_id": test["id"]})
+            store.insert("test_attempts", attempts)
+        correct = sum(1 for a in attempts if a["is_correct"])
+        total = test.get("total_questions") or len(questions) or len(attempts)
+        accuracy = round(correct / max(1, total) * 100)
+        proctoring = et.normalize_proctoring(test.get("proctoring"))
+        proctoring["autoSubmitted"] = proctoring["autoSubmitted"] or auto
+        store.update("tests", {"status": "completed", "completed_at": _now(), "score_correct": correct, "score_total": total,
+                               "score_percent": accuracy, "ai_analysis": None, "proctoring": proctoring}, {"id": test["id"]})
         return {"success": True, "testId": test["id"], "total": total, "correct": correct, "accuracy": accuracy, "ai_analysis": None}
     except Exception as err:
         return public_error(err, "Internal error")
@@ -191,7 +202,6 @@ def proctor_violation(test_id: str, body: dict = Body(default_factory=dict), emp
             existing, vtype, str(body["detail"])[:240] if body.get("detail") else None,
             str(body["category"]) if body.get("category") else None, str(body["severity"]) if body.get("severity") else None)
         get_store().update("tests", {"proctoring": updated}, {"id": test["id"]})
-        test_backup.snapshot(test["id"], "proctor")
         auto = updated["autoSubmitted"] and not existing["autoSubmitted"] and updated["warningCount"] >= et.MAX_VIOLATIONS
         return {"success": True, "proctoring": updated, "autoSubmit": auto}
     except Exception as err:
@@ -217,7 +227,6 @@ async def upload_video(test_id: str, video: UploadFile = File(None), employee: d
             return json_error(500, "Failed to store recording")
         url = test_video.admin_url(test["id"])
         _mark_video_ready(test, url)
-        test_backup.snapshot(test["id"], "video")
         return {"success": True, "videoUrl": url}
     except Exception as err:
         return public_error(err, "Upload failed")
@@ -272,7 +281,6 @@ async def upload_chunk(test_id: str, chunk: UploadFile = File(None), chunkIndex:
             return json_error(500, "Failed to store recording")
         url = test_video.admin_url(test["id"])
         _mark_video_ready(test, url)
-        test_backup.snapshot(test["id"], "video")
         shutil.rmtree(folder, ignore_errors=True)
         return {"complete": True, "success": True, "videoUrl": url, "bytes": len(full)}
     except Exception as err:

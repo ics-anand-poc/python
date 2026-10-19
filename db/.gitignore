@@ -2,3 +2,6 @@ node_modules/
 .env
 .env.local
 *.log
+mssql/data/*.json
+supabase/.temp/
+supabase/.branches/

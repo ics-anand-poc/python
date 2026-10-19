@@ -251,7 +251,7 @@ def _request(system: str, prompt: str, temperature: float, max_tokens: int, time
         if res.status_code == 400:
             res = _post(slim, timeout_s)
         if res.status_code in (401, 403):
-            raise LlmError("Local Qwen rejected LOCAL_LLM_API_KEY. Make sure the key in conf/application.properties matches the one Qwen was started with.")
+            raise LlmError("Local Qwen rejected LOCAL_LLM_API_KEY. Make sure the key in .env.local matches the one Qwen was started with.")
         if res.status_code >= 400:
             raise LlmError(f"Local LLM HTTP {res.status_code}")
         choice = (res.json().get("choices") or [{}])[0]

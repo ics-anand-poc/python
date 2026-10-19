@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Body, Depends, Request
-from fastapi.responses import JSONResponse
 
-from core.auth import acting_admin_email, admin_email, require_admin
+from core.auth import require_admin
 from core.errors import ApiError, json_error, public_error
 from core.security import get_client_ip, is_rate_limited, is_rate_limited_any, rate_limited_response
 from core.tokens import sign_token
@@ -9,8 +8,6 @@ from core.validation import as_email, as_password
 from services import admin_accounts, audit
 
 router = APIRouter(prefix="/api/admin/auth", tags=["admin-auth"])
-
-ADMIN_HANDOFF_COOKIE = "ms_admin_sso_handoff"
 
 
 @router.post("/login")
@@ -38,41 +35,30 @@ def login(request: Request, body: dict = Body(default_factory=dict)):
         if not access:
             audit.add_log(email, "ADMIN_LOGIN_FAILURE", "Admin Console", "Invalid password provided", ip)
             return json_error(401, "Invalid Password")
-        token = sign_token("admin", 60 * 60 * 1000, email=access["email"])
+        token = sign_token("admin", 60 * 60 * 1000)
         audit.add_log(
             access["email"], "ADMIN_LOGIN_SUCCESS", "Admin Console",
             "Admin session generated successfully" if access["canViewEmployeePortal"]
             else "Admin session generated without Employee Portal access", ip,
         )
-        return {"status": "ok", "token": token, "email": access["email"], "isSuperAdmin": access["isSuperAdmin"],
-                "permissions": access["permissions"], "canViewEmployeePortal": access["canViewEmployeePortal"],
-                "canChangePassword": access["canChangePassword"]}
+        return {
+            "status": "ok",
+            "token": token,
+            "canViewEmployeePortal": access["canViewEmployeePortal"],
+            "canChangePassword": access["canChangePassword"],
+        }
     except Exception as err:
         return public_error(err, "Unable to sign in")
 
 
-@router.post("/refresh")
-def refresh(request: Request, _: str = Depends(require_admin)):
-    """Swap a still-valid admin token for a fresh one so active admins are not signed out mid-task."""
-    email = admin_email(request)
-    if not email:
-        return json_error(401, "Unauthorized")
-    access = admin_accounts.get_access(email)
-    if not any(access["permissions"].values()):
-        return json_error(401, "Unauthorized")
-    token = sign_token("admin", 60 * 60 * 1000, email=access["email"])
-    return {"status": "ok", "token": token, "isSuperAdmin": access["isSuperAdmin"], "permissions": access["permissions"],
-            "canViewEmployeePortal": access["canViewEmployeePortal"], "canChangePassword": access["canChangePassword"]}
-
-
 @router.get("/validate")
 def validate(request: Request, _: str = Depends(require_admin)):
-    email = acting_admin_email(request)
+    email = (request.query_params.get("email") or "").strip().lower()
     if not email:
         return {"status": "ok"}
     access = admin_accounts.get_access(email)
-    return {"status": "ok", "email": access["email"], "isSuperAdmin": access["isSuperAdmin"], "permissions": access["permissions"],
-            "canViewEmployeePortal": access["canViewEmployeePortal"], "canChangePassword": access["canChangePassword"]}
+    return {"status": "ok", "email": access["email"], "canViewEmployeePortal": access["canViewEmployeePortal"],
+            "canChangePassword": access["canChangePassword"]}
 
 
 @router.post("/change-password")
@@ -82,7 +68,7 @@ def change_password(request: Request, body: dict = Body(default_factory=dict), _
     if limit.limited:
         return rate_limited_response(limit, "Too many attempts. Please try again later.")
     try:
-        email = admin_email(request) or as_email(body.get("email")) or ""
+        email = as_email(body.get("email")) or ""
         current = as_password(body.get("currentPassword") if isinstance(body.get("currentPassword"), str) else "", True)
         new = as_password(body.get("newPassword") if isinstance(body.get("newPassword"), str) else "", True)
         if current is None or new is None:
@@ -124,33 +110,3 @@ def verify_supervisor(request: Request, body: dict = Body(default_factory=dict),
     except Exception as err:
         return public_error(err, "Failed to verify supervisor password")
 
-
-
-@router.get("/saml/handoff")
-def admin_sso_handoff(request: Request):
-    from core.tokens import token_claims
-
-    token = request.cookies.get(ADMIN_HANDOFF_COOKIE) or ""
-    claims = token_claims(token)
-    ok = bool(claims and claims.get("employee_id") == "ADMIN" and claims.get("email"))
-    if ok:
-        access = admin_accounts.get_access(claims["email"])
-        body = {"status": "ok", "token": token, "email": access["email"], "isSuperAdmin": access["isSuperAdmin"],
-                "permissions": access["permissions"], "canViewEmployeePortal": access["canViewEmployeePortal"],
-                "canChangePassword": access["canChangePassword"]}
-    else:
-        body = {"error": "Microsoft sign-in session expired. Please try again."}
-    response = JSONResponse(body, status_code=200 if ok else 401, headers={"Cache-Control": "no-store"})
-    response.delete_cookie(ADMIN_HANDOFF_COOKIE, path="/")
-    return response
-
-
-@router.get("/sso/check")
-def sso_check(request: Request, _: str = Depends(require_admin)):
-    from services import saml
-
-    cfg = saml.get_config()
-    return {"enabled": cfg["enabled"], "configured": cfg["configured"], "missing": cfg["missing"], "adminSso": cfg["admin_sso"],
-            "idpInitiatedAllowed": cfg["allow_idp_initiated"], "issuer": cfg["issuer"], "callbackUrl": cfg["callback_url"],
-            "idpEntityId": cfg["idp_entity_id"], "metadataUrl": cfg["metadata_url"], "metadataError": cfg["metadata_error"], "signedRequests": bool(cfg["sp_private_key"]), "certificates": saml.cert_expiry(cfg),
-            "spMetadataUrl": f"{cfg['app_url']}/api/employee/auth/saml/metadata"}

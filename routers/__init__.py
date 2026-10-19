@@ -1,5 +1,4 @@
 from routers import (
-    admin_access,
     admin_auth,
     admin_employee_tests,
     admin_employees,
@@ -7,7 +6,6 @@ from routers import (
     admin_jd,
     admin_misc,
     admin_monitor,
-    admin_question_bank,
     admin_resumes,
     admin_uploads,
     employee_auth,
@@ -20,11 +18,9 @@ from routers import (
 ROUTERS = [
     health.router,
     admin_misc.public,
-    admin_access.router,
     admin_auth.router,
     admin_misc.router,
     admin_monitor.router,
-    admin_question_bank.router,
     admin_jd.router,
     admin_employee_tests.router,
     admin_employees.router,

@@ -8,7 +8,6 @@ from typing import Optional
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from core import request_context
 from core.config import env_int
 from core.validation import LIMITS
 
@@ -155,7 +154,6 @@ def install_traffic_controls(app) -> None:
     @app.middleware("http")
     async def traffic_controls(request: Request, call_next):
         path = request.url.path
-        request_context.bind(request, get_client_ip(request))
         if path.startswith(EXEMPT_PREFIXES):
             return await call_next(request)
         declared = _declared_length(request)

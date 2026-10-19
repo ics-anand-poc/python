@@ -1,17 +1,10 @@
-import logging
 import re
-import threading
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from core.db import get_store
 from services import accounts, question_bank, test_video
-from services.structured_log import write_log
-
-log = logging.getLogger("talentscope")
-SWEEP_INTERVAL_S = 120
 
 MAX_VIOLATIONS = 3
 VIOLATION_COOLDOWN_MS = 2500
@@ -225,76 +218,3 @@ def question_attempts_batch(test_ids: list[str]) -> dict[str, list[dict]]:
             "submitted_at": attempt.get("created_at") if attempt else None,
         })
     return out
-
-
-def finalize(test: dict, emp_uuid: Optional[str], answers: list[dict], auto: bool) -> dict:
-    store = get_store()
-    questions = questions_for(test["id"])
-    correct_map = {str(q["id"]): q["correct_option_index"] for q in questions}
-    attempts = [
-        {"test_id": test["id"], "employee_id": emp_uuid, "question_id": a["question_id"],
-         "selected_option_index": a.get("selected_index"),
-         "is_correct": correct_map[str(a["question_id"])] == a.get("selected_index"),
-         "time_taken_seconds": int(a.get("time_seconds") or 0), "session_key": test["id"][:8]}
-        for a in answers if isinstance(a, dict) and str(a.get("question_id")) in correct_map and isinstance(a.get("selected_index"), int)
-    ]
-    if attempts:
-        store.delete("test_attempts", {"test_id": test["id"]})
-        store.insert("test_attempts", attempts)
-    correct = sum(1 for a in attempts if a["is_correct"])
-    total = test.get("total_questions") or len(questions) or len(attempts)
-    accuracy = round(correct / max(1, total) * 100)
-    proctoring = normalize_proctoring(test.get("proctoring"))
-    proctoring["autoSubmitted"] = proctoring["autoSubmitted"] or auto
-    store.update("tests", {"status": "completed", "completed_at": _now(), "score_correct": correct, "score_total": total,
-                           "score_percent": accuracy, "ai_analysis": None, "proctoring": proctoring}, {"id": test["id"]})
-    return {"total": total, "correct": correct, "accuracy": accuracy}
-
-
-def saved_answers(test: dict) -> list[dict]:
-    saved = test.get("in_progress")
-    if not isinstance(saved, dict):
-        return []
-    by_index = {int(q["question_index"]): q for q in questions_for(test["id"])}
-    out = []
-    for key, selected in saved.items():
-        question = by_index.get(int(key)) if str(key).lstrip("-").isdigit() else None
-        if question and isinstance(selected, int):
-            out.append({"question_id": question["id"], "selected_index": selected, "time_seconds": 0})
-    return out
-
-
-def finalize_if_expired(test: dict) -> Optional[dict]:
-    if (test.get("status") or "pending") != "in_progress" or not is_time_expired(test):
-        return None
-    owner = str(test.get("employee_id") or "")
-    emp_uuid = owner if UUID_RE.match(owner) else accounts.employee_uuid(str(test.get("employee_code") or owner))
-    result = finalize(test, emp_uuid, saved_answers(test), True)
-    write_log("employee", "EMPLOYEE_TEST_AUTO_SUBMITTED", "success",
-              f"Test {test['id']} reached its time limit and was submitted with the saved answers: {result['correct']}/{result['total']}", actor="system")
-    return result
-
-
-def sweep_expired() -> int:
-    done = 0
-    try:
-        for test in get_store().select("tests", {"status": "in_progress"}):
-            try:
-                if finalize_if_expired(test):
-                    done += 1
-            except Exception as err:
-                log.error("auto-submit of expired test %s failed: %s", test.get("id"), err)
-    except Exception as err:
-        log.error("expired test sweep failed: %s", err)
-    return done
-
-
-def _sweeper_loop() -> None:
-    time.sleep(30)
-    while True:
-        sweep_expired()
-        time.sleep(SWEEP_INTERVAL_S)
-
-
-def start_expiry_sweeper() -> None:
-    threading.Thread(target=_sweeper_loop, daemon=True, name="test-expiry").start()

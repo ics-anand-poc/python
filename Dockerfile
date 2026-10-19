@@ -1,5 +1,4 @@
-# ── TalentScope Python API (FastAPI + pyodbc) ──
-# Build context: talentscope-python repository root.
+# TalentScope Python API (FastAPI + pyodbc)
 
 FROM python:3.11-slim AS base
 
@@ -23,11 +22,12 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python deps
-COPY requirements.txt ./requirements.txt
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . ./
+COPY . .
+
 # Ensure uploads dir exists
 RUN mkdir -p /app/uploads
 

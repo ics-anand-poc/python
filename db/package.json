@@ -2,7 +2,7 @@
   "name": "talentscope-db",
   "version": "1.0.0",
   "private": true,
-  "description": "TalentScope MSSQL database as code: schema migrations + table data (local, remote, azure).",
+  "description": "TalentScope database as code: SQL Server migrations/data plus optional Supabase PostgreSQL schema.",
   "scripts": {
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
@@ -14,7 +14,10 @@
     "db:deploy:remote": "tsx scripts/migrate.ts migrate --target=remote && tsx scripts/deploy-data.ts --target=remote",
     "typecheck": "tsc --noEmit",
     "db:azure": "tsx scripts/migrate.ts migrate --target=azure && tsx scripts/deploy-data.ts --target=azure",
-    "db:sync-live": "tsx scripts/sync-live-to-dev.ts"
+    "supabase:start": "supabase --workdir supabase start",
+    "supabase:stop": "supabase --workdir supabase stop",
+    "supabase:status": "supabase --workdir supabase status",
+    "supabase:reset": "supabase --workdir supabase db reset"
   },
   "dependencies": {
     "mssql": "^12.7.2"

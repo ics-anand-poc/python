@@ -12,11 +12,11 @@
  *   npm run db:deploy-data -- --tables=employees,portal_settings
  */
 import { existsSync, readFileSync } from "fs";
-import { applyTargetArg, argValue, loadApplicationProperties } from "./lib/env";
+import { applyTargetArg, argValue, loadProjectEnv } from "./lib/env";
 import { connect, resolveMssqlTarget, sql } from "./lib/mssql";
 import { dataFile, quoteIdent, selectTables, type TableDef } from "./lib/tables";
 
-loadApplicationProperties();
+loadProjectEnv();
 const argv = process.argv.slice(2);
 applyTargetArg(argv);
 
@@ -259,7 +259,22 @@ FROM @actions;`);
 
 async function main() {
   const target = resolveMssqlTarget();
-  const tables = selectTables(argValue(argv, "tables")).filter((t) => existsSync(dataFile(t.name)));
+  const tableFilter = argValue(argv, "tables");
+  const requestedTables = selectTables(tableFilter);
+  const missing = requestedTables.filter((table) => !existsSync(dataFile(table.name)));
+  if (tableFilter && missing.length) {
+    throw new Error(
+      `Missing seed dataset(s): ${missing.map((table) => dataFile(table.name)).join(", ")}. ` +
+        "Seed JSON files are excluded from Git and Docker; supply approved data files before deploying seeds."
+    );
+  }
+  const tables = requestedTables.filter((table) => existsSync(dataFile(table.name)));
+  if (!tables.length) {
+    throw new Error(
+      "No seed datasets found in mssql/data. Seed JSON files are excluded from Git and Docker; " +
+        "supply approved data files before deploying seeds."
+    );
+  }
   const pool = await connect(target);
 
   try {

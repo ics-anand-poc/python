@@ -15,22 +15,26 @@ services:
         value: "1"
       - key: NODE_ENV
         value: production
-      - key: APP_PROFILE
-        value: vercel
       - key: UPLOAD_DIR
         value: /app/uploads
-      - key: SUPABASE_DB_HOST
+      - key: DB_TARGET
+        value: MSSQL
+      - key: MSSQL_TARGET
+        value: azure
+      - key: MSSQL_AZURE_PORT
+        value: "1433"
+      - key: MSSQL_AZURE_ENCRYPT
+        value: "true"
+      - key: MSSQL_AZURE_TRUST_SERVER_CERTIFICATE
+        value: "false"
+      - key: MSSQL_AZURE_SERVER
         sync: false
-      - key: SUPABASE_DB_PORT
-        value: "5432"
-      - key: SUPABASE_DB_NAME
-        value: postgres
-      - key: SUPABASE_DB_USER
+      - key: MSSQL_AZURE_DATABASE
         sync: false
-      - key: SUPABASE_DB_PASSWORD
+      - key: MSSQL_AZURE_USER
         sync: false
-      - key: POSTGRES_POOL_MAX
-        value: "5"
+      - key: MSSQL_AZURE_PASSWORD
+        sync: false
       - key: FRONTEND_ORIGIN
         sync: false
       - key: EMPLOYEE_AUTH_SECRET

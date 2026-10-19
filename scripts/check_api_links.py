@@ -1,14 +1,16 @@
 import re
 import sys
+import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "python"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from main import app
 
 CALL_RE = re.compile(r"/api/[A-Za-z0-9_\-/.${}\[\]]*")
 SKIP = ("node_modules", ".next")
+UI_ROOT = Path(os.environ.get("TALENTSCOPE_UI_DIR", str(ROOT.parent / "ui")))
 
 
 def route_table() -> list[tuple[list[str], str, set]]:
@@ -36,7 +38,7 @@ def compare(ui: list[str], route: list[str]) -> str:
 
 def ui_calls() -> dict[str, set]:
     calls: dict[str, set] = {}
-    for file in (ROOT / "UI" / "src").rglob("*.ts*"):
+    for file in (UI_ROOT / "src").rglob("*.ts*"):
         if any(part in file.parts for part in SKIP):
             continue
         for match in CALL_RE.finditer(file.read_text(encoding="utf-8", errors="ignore")):
@@ -44,11 +46,14 @@ def ui_calls() -> dict[str, set]:
             path = re.sub(r"\$\{[^}]*\}", "x", raw).split("?")[0].rstrip("/")
             if path == "/api":
                 continue
-            calls.setdefault(path, set()).add(str(file.relative_to(ROOT)))
+            calls.setdefault(path, set()).add(str(file.relative_to(UI_ROOT)))
     return calls
 
 
 def main() -> int:
+    if not (UI_ROOT / "src").is_dir():
+        print(f"UI source not found at {UI_ROOT}; set TALENTSCOPE_UI_DIR to the UI repository path.")
+        return 2
     table = route_table()
     calls = ui_calls()
     missing, weak = [], []

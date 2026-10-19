@@ -3,14 +3,14 @@ import re
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
-from core.auth import acting_admin_email, require_permission
+from core.auth import require_admin
 from core.errors import json_error, public_error
 from core.security import UPLOAD_ALLOWED_EXTS, get_client_ip, inspect_upload, is_rate_limited_any, rate_limited_response
 from core.validation import as_email
 from services import automation, dashboard_sync, docs_storage, hr_files, portal_roster, resumes
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin", tags=["admin-ingest"], dependencies=[Depends(require_permission("adminControls"))])
+router = APIRouter(prefix="/api/admin", tags=["admin-ingest"], dependencies=[Depends(require_admin)])
 
 CATEGORY_MAP = {
     "resume": ("Resumes", "candidates"), "jd": ("JD", "requirements"), "br": ("BR", "requirements"),
@@ -114,7 +114,7 @@ async def upload_unified(request: Request, file: UploadFile = File(None), catego
 def refresh(request: Request):
     kind = request.query_params.get("type")
     jd_id = request.query_params.get("activeJdId") or None
-    actor = acting_admin_email(request) or ""
+    actor = (request.query_params.get("email") or "").strip().lower()
     try:
         if kind == "requirements":
             result = automation.refresh_requirements(actor_email=actor)
