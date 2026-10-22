@@ -200,13 +200,24 @@ def _sso_error(app: str, message: str, status: int = 307) -> RedirectResponse:
     return RedirectResponse(f"{app}/employee?sso_error={quote(message, safe='')}", status_code=status)
 
 
+@router.get("/saml/status")
+def saml_status():
+    cfg = saml.get_config()
+    return JSONResponse(
+        {"enabled": cfg["enabled"], "adminSso": cfg["enabled"] and cfg["admin_sso"]},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/saml")
 def saml_start(request: Request):
     cfg = saml.get_config()
     ip = get_client_ip(request)
     if is_rate_limited(f"employee_saml_login_{ip}", 12, 60_000).limited:
         return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.")
-    if not cfg["configured"]:
+    if not cfg["enabled"]:
+        if cfg["disabled"]:
+            return _sso_error(cfg["app_url"], "Microsoft sign-in is turned off.")
         return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]))
     try:
         return RedirectResponse(saml.build_authorize_url("/employee", cfg), status_code=302)
@@ -221,8 +232,9 @@ async def saml_acs(request: Request):
     ip = get_client_ip(request)
     if is_rate_limited(f"employee_saml_acs_{ip}", 20, 60_000).limited:
         return _sso_error(cfg["app_url"], "Too many sign-in attempts. Try again shortly.", 303)
-    if not cfg["configured"]:
-        return _sso_error(cfg["app_url"], saml.not_configured_message(cfg["missing"]), 303)
+    if not cfg["enabled"]:
+        message = "Microsoft sign-in is turned off." if cfg["disabled"] else saml.not_configured_message(cfg["missing"])
+        return _sso_error(cfg["app_url"], message, 303)
     try:
         form = await request.form()
         saml_response = str(form.get("SAMLResponse") or "")

@@ -1,5 +1,6 @@
 import base64
 import copy
+import logging
 import re
 import threading
 import time
@@ -7,7 +8,7 @@ import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import urlsplit, quote, urlencode
 
 from lxml import etree
 from signxml import XMLVerifier
@@ -21,7 +22,12 @@ NS = {
     "md": "urn:oasis:names:tc:SAML:2.0:metadata",
 }
 GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+log = logging.getLogger("talentscope")
 CLOCK_SKEW = timedelta(seconds=60)
+METADATA_TTL_S = 3600
+METADATA_TIMEOUT_S = 8
+METADATA_MAX_BYTES = 1_000_000
+METADATA_HOSTS = ("login.microsoftonline.com", "login.microsoftonline.us", "login.microsoft.com", "login.windows.net")
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 STATUS_SUCCESS = "urn:oasis:names:tc:SAML:2.0:status:Success"
 DEFAULT_EMAIL_ATTRIBUTES = [
@@ -58,11 +64,74 @@ def cert_to_pem(body: str) -> str:
     return "-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n"
 
 
+def split_certs(value: str) -> list[str]:
+    return [cert for cert in (_strip_cert(part) for part in re.split(r"[|,;]", _unescape_newlines(value))) if cert]
+
+
+_metadata: dict = {"url": "", "at": 0.0, "certs": [], "error": ""}
+_metadata_lock = threading.Lock()
+
+
+def _metadata_url_ok(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme == "https" and (parts.hostname or "") in METADATA_HOSTS and not parts.username
+
+
+def parse_metadata_certs(xml: bytes) -> list[str]:
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
+    root = etree.fromstring(xml, parser)
+    certs = []
+    for key in root.iter("{urn:oasis:names:tc:SAML:2.0:metadata}KeyDescriptor"):
+        if key.get("use") == "encryption":
+            continue
+        for node in key.iter("{http://www.w3.org/2000/09/xmldsig#}X509Certificate"):
+            body = re.sub(r"\s+", "", node.text or "")
+            if body and body not in certs:
+                certs.append(body)
+    return certs
+
+
+def metadata_certs(url: str) -> tuple[list[str], str]:
+    if not url:
+        return [], ""
+    with _metadata_lock:
+        fresh = _metadata["url"] == url and time.monotonic() - _metadata["at"] < METADATA_TTL_S
+        if fresh:
+            return list(_metadata["certs"]), _metadata["error"]
+        try:
+            if not _metadata_url_ok(url):
+                raise SamlError("SAML_IDP_METADATA_URL must be an https Microsoft login URL")
+            import httpx
+
+            response = httpx.get(url, timeout=METADATA_TIMEOUT_S, follow_redirects=False)
+            response.raise_for_status()
+            if len(response.content) > METADATA_MAX_BYTES:
+                raise SamlError("IdP metadata is too large")
+            certs = parse_metadata_certs(response.content)
+            if not certs:
+                raise SamlError("IdP metadata contains no signing certificate")
+            _metadata.update(url=url, at=time.monotonic(), certs=certs, error="")
+        except Exception as err:
+            log.warning("SAML IdP metadata refresh failed: %s", err)
+            keep = _metadata["certs"] if _metadata["url"] == url else []
+            _metadata.update(url=url, at=time.monotonic() - METADATA_TTL_S + 60, certs=keep, error=str(err)[:200])
+        return list(_metadata["certs"]), _metadata["error"]
+
+
+def reset_metadata_cache() -> None:
+    with _metadata_lock:
+        _metadata.update(url="", at=0.0, certs=[], error="")
+
+
 def get_config() -> dict:
     app = app_url()
     tenant = env("MICROSOFT_TENANT_ID")
     issuer = env("SAML_ISSUER")
-    idp_cert = _strip_cert(env("SAML_IDP_CERT"))
+    idp_certs = split_certs(env("SAML_IDP_CERT"))
+    metadata_url = env("SAML_IDP_METADATA_URL")
+    fetched_certs, metadata_error = metadata_certs(metadata_url)
+    idp_certs.extend(cert for cert in fetched_certs if cert not in idp_certs)
+    idp_cert = idp_certs[0] if idp_certs else ""
     entry_point = env("SAML_ENTRY_POINT") or (
         f"https://login.microsoftonline.com/{tenant}/saml2" if GUID_RE.match(tenant) else ""
     )
@@ -70,13 +139,21 @@ def get_config() -> dict:
     if not issuer:
         missing.append("SAML_ISSUER")
     if not idp_cert:
-        missing.append("SAML_IDP_CERT")
+        missing.append("SAML_IDP_CERT (or a reachable SAML_IDP_METADATA_URL)")
     if not entry_point:
         missing.append("SAML_ENTRY_POINT (or a GUID MICROSOFT_TENANT_ID)")
+    disabled = env("SAML_ENABLED").lower() in ("0", "false", "off", "no")
     return {
         "app_url": app,
         "issuer": issuer,
         "idp_cert": idp_cert,
+        "idp_certs": idp_certs,
+        "idp_entity_id": env("SAML_IDP_ENTITY_ID") or (f"https://sts.windows.net/{tenant}/" if GUID_RE.match(tenant) else ""),
+        "allow_idp_initiated": env("SAML_ALLOW_IDP_INITIATED") == "1",
+        "admin_sso": env("SAML_ADMIN_SSO") == "1",
+        "disabled": disabled,
+        "metadata_url": metadata_url,
+        "metadata_error": metadata_error,
         "entry_point": entry_point,
         "callback_url": env("SAML_CALLBACK_URL") or f"{app}/api/employee/auth/saml/acs",
         "sp_private_key": _unescape_newlines(env("SAML_SP_PRIVATE_KEY")),
@@ -85,6 +162,7 @@ def get_config() -> dict:
         "email_attribute": env("SAML_EMAIL_ATTRIBUTE"),
         "missing": missing,
         "configured": not missing,
+        "enabled": not missing and not disabled,
     }
 
 
@@ -256,7 +334,18 @@ def validate_post_response(saml_response_b64: str, cfg: Optional[dict] = None, n
     assertions = root.findall("saml:Assertion", NS)
     if len(assertions) != 1:
         raise SamlError("SAML response must contain exactly one assertion")
-    assertion = _verified_assertion(assertions[0], cert_to_pem(cfg["idp_cert"]))
+    certs = cfg.get("idp_certs") or [cfg["idp_cert"]]
+    last_error = None
+    for cert in certs:
+        try:
+            assertion = _verified_assertion(assertions[0], cert_to_pem(cert))
+            break
+        except SamlError as err:
+            last_error = err
+    else:
+        if last_error:
+            raise last_error
+        raise SamlError("No SAML signing certificate is configured")
 
     conditions = assertion.find("saml:Conditions", NS)
     if conditions is None:
