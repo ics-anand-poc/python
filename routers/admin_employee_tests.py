@@ -1,18 +1,19 @@
+import hashlib
 import re
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.validation import as_uuid
-from services import employee_tests as et, test_video
+from services import employee_tests as et, test_backup, test_video
 
-router = APIRouter(prefix="/api/admin/employee-tests", tags=["admin-employee-tests"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin/employee-tests", tags=["admin-employee-tests"], dependencies=[Depends(require_permission("employeePortal"))])
 
 NAME_RE = re.compile(r"^[\w.\- ()]+$")
-HEADERS = {"Content-Type": "video/webm; codecs=vp8", "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+HEADERS = {"Content-Type": "video/webm; codecs=vp8", "Accept-Ranges": "bytes", "Cache-Control": "private, no-cache"}
 
 
 @router.get("/{test_id}/attempts")
@@ -29,6 +30,17 @@ def attempts(test_id: str):
         return public_error(err, "Failed to load test attempts")
 
 
+@router.get("/{test_id}/backup")
+def backup(test_id: str):
+    tid = as_uuid(test_id)
+    if not tid:
+        return json_error(400, "Test ID is required")
+    saved = test_backup.read_latest(tid)
+    if not saved:
+        return json_error(404, "No backup saved for this test")
+    return {"success": True, "testId": tid, "backup": saved}
+
+
 @router.get("/{test_id}/video")
 def video(test_id: str, request: Request):
     tid = as_uuid(test_id)
@@ -39,6 +51,10 @@ def video(test_id: str, request: Request):
     safe = name if NAME_RE.match(name) and name.lower().endswith(".webm") else f"{tid}.webm"
     disposition = f'{"inline" if request.query_params.get("inline") == "1" else "attachment"}; filename="{safe}"'
     size = len(data)
+    etag = f'"{hashlib.md5(data).hexdigest()}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": HEADERS["Cache-Control"]})
+    base = {**HEADERS, "ETag": etag, "Content-Disposition": disposition}
     header = request.headers.get("range")
     if header:
         m = re.match(r"bytes=(\d*)-(\d*)", header)
@@ -47,5 +63,5 @@ def video(test_id: str, request: Request):
         if start > end or start >= size:
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
         return Response(data[start:end + 1], status_code=206,
-                        headers={**HEADERS, "Content-Range": f"bytes {start}-{end}/{size}", "Content-Disposition": disposition})
-    return Response(data, headers={**HEADERS, "Content-Disposition": disposition})
+                        headers={**base, "Content-Range": f"bytes {start}-{end}/{size}"})
+    return Response(data, headers=base)

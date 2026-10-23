@@ -4,6 +4,7 @@ from core.auth import admin_email, require_admin
 from core.errors import ApiError, json_error, public_error
 from core.security import get_client_ip
 from services import admin_accounts, audit
+from services.structured_log import write_log
 
 router = APIRouter(prefix="/api/admin/admin-accounts", tags=["admin-access"])
 
@@ -41,8 +42,9 @@ def save_admin(request: Request, body: dict = Body(default_factory=dict), actor:
         ok, error, created = admin_accounts.save_named(email, permissions, password)
         if not ok:
             return json_error(400, error)
-        audit.add_log(actor, "ADMIN_ACCESS_GRANTED" if created else "ADMIN_ACCESS_UPDATED", email,
-                      f"{_describe(permissions)}{' (password reset)' if password and not created else ''}", get_client_ip(request))
+        details = f"{_describe(permissions)}{' (password reset)' if password and not created else ''}"
+        audit.add_log(actor, "ADMIN_ACCESS_GRANTED" if created else "ADMIN_ACCESS_UPDATED", email, details, get_client_ip(request))
+        write_log("audit", "ADMIN_ACCESS_GRANTED" if created else "ADMIN_ACCESS_UPDATED", "success", f"{email}: {details}", actor)
         return {"ok": True, "created": created, "admins": admin_accounts.list_named()}
     except Exception as err:
         return public_error(err, "Failed to save admin access")
@@ -56,4 +58,5 @@ def remove_admin(request: Request, actor: str = Depends(super_admin_only)):
     if not admin_accounts.remove_named(email):
         return json_error(404, "That admin was not found.")
     audit.add_log(actor, "ADMIN_ACCESS_REVOKED", email, "Admin panel access removed", get_client_ip(request))
+    write_log("audit", "ADMIN_ACCESS_REVOKED", "success", f"Removed admin access for {email}", actor)
     return {"ok": True, "admins": admin_accounts.list_named()}

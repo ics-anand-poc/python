@@ -81,17 +81,19 @@ def get_account(employee_id: str) -> Optional[dict]:
 
 
 def get_account_by_email(email: str) -> Optional[dict]:
-    clean = (email or "").strip()
+    clean = (email or "").strip().lower()
     if not clean:
         return None
-    row = get_store().first("employees", {"email": clean}, COLUMNS)
+    # Case-insensitive match (SQL Server CI collations treat LIKE as CI without wildcards).
+    row = get_store().first("employees", [("email", "ilike", clean)], COLUMNS)
     return map_row(row) if row else None
 
 
 def upsert_account(account: dict) -> bool:
+    email = str(account.get("email") or f"{account['employee_id']}@nokia.com").strip().lower()
     payload = {
         "employee_id": account["employee_id"],
-        "email": account.get("email") or f"{account['employee_id']}@nokia.com",
+        "email": email,
         "full_name": account.get("full_name") or account["employee_id"],
         "department": account.get("department") or "general",
         "role": account.get("role") or "employee",
@@ -136,6 +138,30 @@ def complete_first_login(employee_id: str) -> bool:
         return False
     account["is_first_login"] = False
     return upsert_account(account)
+
+
+def update_profile(current_employee_id: str, full_name: str, new_employee_id: str = "") -> tuple[Optional[dict], Optional[str]]:
+    """Update display name only. Emp ID changes are admin/HR controlled. Returns (account, error)."""
+    account = get_account(current_employee_id)
+    if not account:
+        return None, "Account not found."
+    name = str(full_name or "").strip()[:120]
+    if not name:
+        return None, "Name is required."
+    requested = str(new_employee_id or "").strip()
+    if requested and requested.upper() != account["employee_id"].upper():
+        return None, "Employee ID cannot be changed here. Ask HR or a TalentScope admin."
+    store = get_store()
+    now = datetime.now(timezone.utc).isoformat()
+    updated = store.update(
+        "employees",
+        {"full_name": name, "updated_at": now},
+        {"employee_id": account["employee_id"]},
+    )
+    if not updated:
+        return None, "Failed to update profile."
+    refreshed = get_account(account["employee_id"])
+    return (refreshed, None) if refreshed else (None, "Failed to update profile.")
 
 
 def employee_uuid(employee_id: str) -> Optional[str]:

@@ -4,7 +4,7 @@ import zipfile
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
-from core.auth import require_admin
+from core.auth import require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import UPLOAD_ALLOWED_EXTS, get_client_ip, inspect_upload, is_rate_limited, validate_file_signature
@@ -12,7 +12,7 @@ from services import audit, hr_files, resumes, sessions
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin", tags=["admin-uploads"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", tags=["admin-uploads"], dependencies=[Depends(require_permission("adminControls"))])
 
 CV_TYPES = {"application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 ZIP_EXTS = ("pdf", "doc", "docx", "txt")

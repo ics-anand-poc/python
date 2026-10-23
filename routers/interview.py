@@ -3,6 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
+import anyio
 from fastapi import APIRouter, Body, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
@@ -10,7 +11,8 @@ from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import get_client_ip, inspect_upload, is_rate_limited_any, rate_limited_response
 from core.validation import as_email, as_uuid
-from services import ai, audit, identity, interviews, llm, resumes, sessions, storage
+from services.structured_log import write_log
+from services import ai, audit, identity, interviews, llm, question_queue, resumes, sessions, storage
 
 log = logging.getLogger("talentscope")
 router = APIRouter(prefix="/api/interview", tags=["interview"])
@@ -55,12 +57,14 @@ def access(request: Request, body: dict = Body(default_factory=dict)):
 
 
 @router.get("/{interview_id}/questions")
-def questions(interview_id: str):
+async def questions(interview_id: str):
     resume_id = as_uuid(interview_id)
     if not resume_id:
         return json_error(400, "Resume ID is required and must be valid")
     try:
-        result = interviews.get_questions(resume_id)
+        if not await anyio.to_thread.run_sync(resumes.get_resume, resume_id):
+            return json_error(404, "Resume not found")
+        result = await question_queue.ensure_async(resume_id)
         if not result:
             return json_error(500, "Failed to generate interview questions")
         return result
@@ -100,7 +104,9 @@ def start(interview_id: str):
     if not resume_id:
         return json_error(400, "Interview ID is required", status="error")
     try:
-        return {"status": "success", "data": interviews.mark_started(resume_id)}
+        data = interviews.mark_started(resume_id)
+        write_log("candidate-processing", "INTERVIEW_STARTED", "success", f"Interview {resume_id} started")
+        return {"status": "success", "data": data}
     except Exception as err:
         return public_error(err, "Failed to start interview", status="error")
 
@@ -141,6 +147,7 @@ def conclude(interview_id: str):
         email = (resume.get("parsed") or {}).get("personal", {}).get("email")
         if email:
             sessions.mark_email_session_used(email)
+        write_log("candidate-processing", "INTERVIEW_FINISHED", "success", f"Interview {resume_id} finished")
         return {"success": True}
     except Exception as err:
         return public_error(err, "Conclude failed")

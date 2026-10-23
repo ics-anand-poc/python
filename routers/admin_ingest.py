@@ -3,14 +3,15 @@ import re
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_permission
 from core.errors import json_error, public_error
 from core.security import UPLOAD_ALLOWED_EXTS, get_client_ip, inspect_upload, is_rate_limited_any, rate_limited_response
 from core.validation import as_email
 from services import automation, dashboard_sync, docs_storage, hr_files, portal_roster, resumes
+from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin", tags=["admin-ingest"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", tags=["admin-ingest"], dependencies=[Depends(require_permission("adminControls"))])
 
 CATEGORY_MAP = {
     "resume": ("Resumes", "candidates"), "jd": ("JD", "requirements"), "br": ("BR", "requirements"),
@@ -36,6 +37,23 @@ def infer_category(filename: str, selected: str) -> str:
     if automation.is_corp_pool_roster_file_name(filename) or name.endswith(".csv"):
         return "employee"
     return selected or "resume"
+
+
+def _counts(result: dict) -> str:
+    parts = []
+    for key in ("processed", "processedBRs", "convertedJDs", "incomingBrRows", "duplicates", "loaded", "added", "updated", "skippedDeleted", "count", "stored"):
+        value = result.get(key)
+        if isinstance(value, (list, dict)):
+            value = len(value)
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    return ", ".join(parts)
+
+
+def _note(kind: str, result: dict, filename: str = "") -> str:
+    counts = _counts(result) if isinstance(result, dict) else ""
+    lead = f"{filename}: " if filename else ""
+    return f"{lead}{kind} finished" + (f" ({counts})" if counts else "")
 
 
 @router.post("/upload_unified")
@@ -103,10 +121,13 @@ async def upload_unified(request: Request, file: UploadFile = File(None), catego
         elif refresh == "interviews":
             result = automation.refresh_interviews()
         dashboard_sync.bump_sync(f"upload_{chosen}")
+        write_log("ingestion", "UPLOAD_PROCESSED", "success", _note(chosen, result, safe), actor or None)
         return {"success": True, "category": chosen, "message": f"File uploaded and processed successfully under {chosen}.", "refreshResult": result}
     except ValueError as err:
+        write_log("ingestion", "UPLOAD_REJECTED", "failed", str(err), as_email(actorEmail or adminEmail) or None)
         return json_error(400, str(err))
     except Exception as err:
+        write_log("ingestion", "UPLOAD_FAILED", "failed", "Upload processing failed", as_email(actorEmail or adminEmail) or None)
         return public_error(err, "Upload processing failed")
 
 
@@ -114,7 +135,7 @@ async def upload_unified(request: Request, file: UploadFile = File(None), catego
 def refresh(request: Request):
     kind = request.query_params.get("type")
     jd_id = request.query_params.get("activeJdId") or None
-    actor = (request.query_params.get("email") or "").strip().lower()
+    actor = acting_admin_email(request) or ""
     try:
         if kind == "requirements":
             result = automation.refresh_requirements(actor_email=actor)
@@ -128,10 +149,15 @@ def refresh(request: Request):
         elif kind == "interviews":
             result = automation.refresh_interviews()
         else:
+            write_log("ingestion", "REFRESH_REJECTED", "failed", f"Invalid refresh type: {kind or 'missing'}", actor or None)
             return json_error(400, "Invalid refresh type specified")
+        ok = bool(result.get("success", True)) if isinstance(result, dict) else True
+        write_log("ingestion", f"REFRESH_{str(kind).upper()}", "success" if ok else "failed", _note(kind, result if isinstance(result, dict) else {}), actor or None)
         dashboard_sync.bump_sync(f"refresh_{kind}")
-        return {**result, "success": True}
+        return {**result, "success": ok}
     except ValueError as err:
+        write_log("ingestion", f"REFRESH_{str(kind or 'UNKNOWN').upper()}_FAILED", "failed", str(err), actor or None)
         return json_error(400, str(err))
     except Exception as err:
+        write_log("ingestion", f"REFRESH_{str(kind or 'UNKNOWN').upper()}_FAILED", "failed", "Refresh failed", actor or None)
         return public_error(err, "Refresh failed")

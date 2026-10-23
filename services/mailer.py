@@ -13,6 +13,10 @@ log = logging.getLogger("talentscope")
 
 
 def configured() -> bool:
+    # Authenticated mailboxes need a user and password.
+    # The company relay (webmail.infinite.com:25) accepts the sender address with no password.
+    if env("SMTP_HOST") and (env("SMTP_USER") or env("SMTP_FROM")):
+        return True
     return bool(env("SMTP_USER") and env("SMTP_PASS"))
 
 
@@ -20,24 +24,41 @@ def _from_address() -> str:
     return env("SMTP_FROM") or (f'"TalentScope" <{env("SMTP_USER")}>' if env("SMTP_USER") else "")
 
 
+def _ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    if env("SMTP_SSL_VERIFY").lower() in ("0", "false", "off", "no"):
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 def send(to: str, subject: str, html: str) -> None:
     host = env("SMTP_HOST") or "smtp.gmail.com"
     port = env_int("SMTP_PORT", 465)
+    password = env("SMTP_PASS")
+    use_ssl = env("SMTP_USE_SSL").lower() not in ("0", "false", "off", "no") if env("SMTP_USE_SSL") else (port == 465)
     message = EmailMessage()
     message["From"] = _from_address()
     message["To"] = to
     message["Subject"] = subject
     message.set_content("This message requires an HTML capable mail client.")
     message.add_alternative(html, subtype="html")
-    context = ssl.create_default_context()
-    if port == 465:
+    context = _ssl_context()
+    if use_ssl:
         with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
-            server.login(env("SMTP_USER"), env("SMTP_PASS"))
+            if password:
+                server.login(env("SMTP_USER"), password)
             server.send_message(message)
         return
     with smtplib.SMTP(host, port, timeout=30) as server:
-        server.starttls(context=context)
-        server.login(env("SMTP_USER"), env("SMTP_PASS"))
+        server.ehlo()
+        # Port 25 is the internal relay: no login, and TLS only if the server offers it.
+        want_tls = env_int("SMTP_STARTTLS", 0) or (port != 25)
+        if want_tls and server.has_extn("starttls"):
+            server.starttls(context=context)
+            server.ehlo()
+        if password:
+            server.login(env("SMTP_USER"), password)
         server.send_message(message)
 
 

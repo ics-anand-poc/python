@@ -1,6 +1,6 @@
-# TalentScope Database
+# TalentScope Database (MS SQL Server)
 
-This directory contains the database schema migrations, optional baseline datasets, and deployment scripts for **Microsoft SQL Server** (local, remote, or Azure SQL), plus the **Supabase/PostgreSQL** schema. The Python API can connect to either database using `DB_TARGET`; its current target is independently chosen for SQL Server using `MSSQL_TARGET`. The seed JSON files are excluded from Git and Docker by default because they contain personal data; provide approved, sanitized datasets privately if you need to seed a database.
+This directory contains the database schema migrations, optional baseline datasets, and deployment scripts for **Microsoft SQL Server** (local, remote, or Azure SQL), plus the **Supabase/PostgreSQL** schema. The Python API can connect to either database using `DB_TARGET`. The seed JSON files are excluded from Git and Docker by default because they contain personal data; provide approved datasets privately if you need to seed a database.
 
 ---
 
@@ -16,12 +16,13 @@ This directory contains the database schema migrations, optional baseline datase
 | `scripts/lib/mssql.ts` | Database connection pool configuration and target resolution |
 | `supabase/config.toml` | Supabase CLI local-development configuration |
 | `supabase/migrations/*.sql` | PostgreSQL schema migrations for Supabase |
+| `postgres/migrations/*.sql` | PostgreSQL migrations applied by `scripts/migrate_postgres.py` |
 
 ---
 
 ## ⚙️ Target Environments
 
-The database tooling reads `MSSQL_TARGET` and the matching connection variables from the Python repository's `.env` or `.env.local` file (or `--target=<name>` on the CLI):
+The database tooling connects to the target specified by `MSSQL_TARGET` in the repo root [`.env.local`](../../.env.local) (or `--target=<name>` on CLI):
 
 | Target | Env Prefix | Description |
 |---|---|---|
@@ -35,8 +36,8 @@ The database tooling reads `MSSQL_TARGET` and the matching connection variables 
 
 ### 1. Install Dependencies
 ```powershell
-cd db
-npm ci
+cd python/db
+npm install
 ```
 
 ### 2. Check Migration Status
@@ -51,7 +52,7 @@ npm run db:migrate
 ```
 
 ### 4. Deploy Baseline Datasets
-Only run this after supplying the required approved JSON files under `mssql/data/`:
+Populate standard test questions, curriculum topics, settings, and baseline employees:
 ```powershell
 # Dry run (test without modifying database)
 npm run db:deploy-data -- --dry-run
@@ -61,20 +62,21 @@ npm run db:deploy-data
 ```
 
 ### 5. Combined One-Step Setup (Local)
-Runs both migrations and baseline data deployment against local SQL Server. Requires the private seed files above:
+Runs both migrations and baseline data deployment against local SQL Server:
 ```powershell
 npm run db:local
 ```
 
 ### 6. Azure SQL Deployment
-`db:azure` includes baseline data deployment and requires the private seed files. To apply schema migrations only, run:
 ```powershell
-npm run db:migrate -- --target=azure
+npm run db:azure
 ```
+
+---
 
 ## Supabase Data API runtime
 
-The API uses Supabase's HTTPS Data API; no direct PostgreSQL password or local Docker/Supabase stack is needed. Set `DB_TARGET=SUPABASE` in the Python repository's `.env.local`, and configure:
+The API uses Supabase's HTTPS Data API. Set `DB_TARGET=SUPABASE` in the repo `.env.local`, and configure:
 
 ```dotenv
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
@@ -82,21 +84,11 @@ SUPABASE_SERVICE_ROLE_KEY=<server-side-service-role-key>
 SUPABASE_API_TIMEOUT_S=20
 ```
 
-The backend sends requests to `/rest/v1/` using the service-role key in the `apikey` and bearer authorization headers. The key bypasses row-level security, so it must remain private on the backend and must never be exposed to a browser. The anon key is not used by this backend store. SQL Server retains its separate `MSSQL_TARGET=local|remote|azure` selection when `DB_TARGET=MSSQL`.
+The backend sends requests to `/rest/v1/` using the service-role key. That key bypasses row-level security, so it stays on the backend. SQL Server keeps its own `MSSQL_TARGET=local|remote|azure` selection when `DB_TARGET=MSSQL`.
 
-Install the Python requirements after updating the checkout:
+In the Supabase Dashboard, open **SQL Editor**, paste `supabase/migrations/20261019130000_initial_schema.sql`, and run it. `scripts/migrate_postgres.py` can apply the files in `postgres/migrations/` when a direct Postgres connection is available.
 
-```powershell
-pip install -r requirements.txt
-```
-
-Because the service-role key was pasted into chat, treat it as compromised: rotate it in the Supabase dashboard and use only the newly generated key in the ignored `.env.local`. Do not commit that file.
-
-In the Supabase Dashboard, open **SQL Editor**, paste the contents of `supabase/migrations/20261019130000_initial_schema.sql`, and run it against the project. This migration creates the tables and enables row-level security; it does not create client policies.
-
-Only use `DB_TARGET=SUPABASE` once the migration is applied and the URL and rotated key are set. Check `/api/health` and the API logs to verify connectivity.
-
-The optional local Supabase CLI commands still exist for development, but require Docker Desktop:
+The optional local Supabase CLI commands need Docker Desktop:
 
 ```powershell
 npm run supabase:start
@@ -109,9 +101,9 @@ npm run supabase:stop
 ## 🛠️ Database Troubleshooting
 
 ### 1. `Login failed for user '...'`
-- **Cause**: Invalid username or password in `.env` or SQL Server is in Windows Authentication-only mode.
+- **Cause**: Invalid username or password in `.env.local` or SQL Server is in Windows Authentication-only mode.
 - **Fix**:
-  1. Verify `MSSQL_LOCAL_USER` and `MSSQL_LOCAL_PASSWORD` in the Python repository's `.env`.
+  1. Verify `MSSQL_LOCAL_USER` and `MSSQL_LOCAL_PASSWORD` in `.env.local`.
   2. In SQL Server Management Studio (SSMS), right-click your Server -> **Properties** -> **Security** -> Enable **SQL Server and Windows Authentication mode**.
   3. Under **Security** -> **Logins**, ensure the user exists, is enabled, and has `db_owner` role on the `Talentscope` database.
 
@@ -125,7 +117,7 @@ npm run supabase:stop
 
 ### 3. `The certificate chain was issued by an authority that is not trusted`
 - **Cause**: Self-signed SSL certificate on local SQL Server.
-- **Fix**: Set `MSSQL_LOCAL_TRUST_SERVER_CERTIFICATE=true` in the Python repository's `.env`.
+- **Fix**: Set `MSSQL_LOCAL_TRUST_SERVER_CERTIFICATE=true` in `.env.local`.
 
 ### 4. `Migration Checksum Mismatch`
 - **Cause**: An existing `.sql` migration file was modified after it was already applied to the database.
@@ -141,5 +133,5 @@ npm run supabase:stop
 
 1. Create a new file in `mssql/migrations/` following the naming convention `00X_description.sql`.
 2. Ensure DDL statements are idempotent or safe for migration.
-3. If new tables are introduced, add them to [`scripts/lib/tables.ts`](./scripts/lib/tables.ts).
+3. If new tables are introduced, add them to `TABLES` in [`scripts/lib/tables.ts`](file:///scripts/lib/tables.ts).
 4. Run `npm run db:migrate` and verify with `npm run db:status`.

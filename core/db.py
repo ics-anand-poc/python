@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Union
 
-from core.config import db_target, mssql_settings, supabase_settings
+from core.config import db_target, env, mssql_settings, supabase_settings
 
 JSON_COLUMNS = {
     "employees": {"badges"},
@@ -16,6 +16,7 @@ JSON_COLUMNS = {
     "portal_settings": {"value"},
     "evaluations": {"bloom_scores", "bloom_submissions", "bloom_graded"},
     "candidate_interview_data": {"evaluation"},
+    "question_sets": {"items"},
 }
 
 POSTGRES_JSON_COLUMNS = {
@@ -27,6 +28,7 @@ POSTGRES_JSON_COLUMNS = {
     "candidate_interview_data": {"evaluation"},
     "test_questions": {"options"},
     "evaluations": {"bloom_scores", "bloom_submissions", "bloom_graded"},
+    "question_sets": {"items"},
 }
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -775,8 +777,8 @@ def get_store() -> Store:
     if _store is None:
         with _store_lock:
             if _store is None:
-                target = db_target()
-                _store = SupabaseStore() if target == "SUPABASE" else MssqlStore()
+                use_supabase = db_target() == "SUPABASE" or env("DB_PROVIDER").lower() == "supabase"
+                _store = SupabaseStore() if use_supabase else MssqlStore()
     return _store
 
 

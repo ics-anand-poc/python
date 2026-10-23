@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from core.db import get_store
 
@@ -19,7 +20,7 @@ def _map(row: dict) -> dict:
     }
 
 
-def add_log(actor_email: str, action: str, target: str, details: str, ip_address: str) -> dict:
+def add_log(actor_email: str, action: str, target: str, details: str, ip_address: str = "") -> dict:
     record = {
         "id": str(uuid.uuid4()),
         "actor_email": (actor_email or "").lower().strip(),
@@ -36,9 +37,9 @@ def add_log(actor_email: str, action: str, target: str, details: str, ip_address
     return _map(record)
 
 
-def get_logs() -> list[dict]:
+def get_logs(limit: Optional[int] = None) -> list[dict]:
     try:
-        rows = get_store().select("audit_logs", order="created_at desc")
+        rows = get_store().select("audit_logs", order="created_at desc", limit=limit)
     except Exception as err:
         log.warning("Failed to fetch audit logs: %s", err)
         return []
