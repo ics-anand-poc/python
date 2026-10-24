@@ -287,6 +287,29 @@ def saml_status():
     return JSONResponse({"enabled": cfg["enabled"], "adminSso": cfg["enabled"] and cfg["admin_sso"]}, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/logout")
+def logout(request: Request):
+    """Clear TalentScope session cookies and return a Microsoft sign-out URL.
+
+    Browser clients should clear local tokens, then navigate to microsoftLogoutUrl
+    so the Entra SSO cookie is ended and the next Infinite Login prompts again.
+    """
+    cfg = saml.get_config()
+    reason = str(request.query_params.get("reason") or "").strip()
+    return_path = "/employee"
+    if reason:
+        return_path = f"/employee?reason={quote(reason, safe='')}"
+    payload = {
+        "status": "ok",
+        "microsoftLogoutUrl": saml.idp_logout_url(return_path, cfg) if cfg.get("enabled") else "",
+        "returnTo": f"{cfg['app_url'].rstrip('/')}{return_path}",
+    }
+    response = JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    response.delete_cookie(HANDOFF_COOKIE, path="/")
+    response.delete_cookie(ADMIN_HANDOFF_COOKIE, path="/")
+    return response
+
+
 @router.get("/saml")
 def saml_start(request: Request):
     cfg = saml.get_config()

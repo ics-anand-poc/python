@@ -224,7 +224,9 @@ def get_config() -> dict:
         "idp_certs": idp_certs,
         "idp_entity_id": env("SAML_IDP_ENTITY_ID") or (f"https://sts.windows.net/{tenant}/" if GUID_RE.match(tenant) else ""),
         "allow_idp_initiated": env("SAML_ALLOW_IDP_INITIATED") == "1",
-        "force_authn": env("SAML_FORCE_AUTHN") == "1",
+        # Default ON so Microsoft always prompts after logout / every Infinite Login.
+        # Set SAML_FORCE_AUTHN=0 only if silent SSO is explicitly required.
+        "force_authn": env("SAML_FORCE_AUTHN").lower() not in ("0", "false", "off", "no"),
         "admin_sso": env("SAML_ADMIN_SSO") == "1",
         "disabled": env("SAML_ENABLED").lower() in ("0", "false", "off", "no"),
         "metadata_url": metadata_url,
@@ -287,6 +289,34 @@ def start_login(target: str, return_to: str, cfg: Optional[dict] = None) -> str:
     request_id, xml = build_authn_request(cfg)
     shared.put(f"saml:req:{request_id}", json.dumps({"target": target, "returnTo": safe_return_path(return_to)}), PENDING_TTL_S)
     return _redirect_url(xml, request_id, cfg)
+
+
+def _entra_tenant_id(cfg: Optional[dict] = None) -> str:
+    cfg = cfg or get_config()
+    entity = cfg.get("idp_entity_id") or ""
+    match = re.search(r"sts\.windows\.net/([0-9a-fA-F-]{36})", entity)
+    if match:
+        return match.group(1)
+    match = re.search(r"login\.microsoftonline\.com/([0-9a-fA-F-]{36}|common|organizations)", cfg.get("entry_point") or "")
+    if match:
+        return match.group(1)
+    tenant = env("MICROSOFT_TENANT_ID")
+    if GUID_RE.match(tenant) or tenant in ("common", "organizations"):
+        return tenant
+    return "common"
+
+
+def idp_logout_url(return_to: Optional[str] = None, cfg: Optional[dict] = None) -> str:
+    """End the Microsoft Entra session, then return the user to TalentScope."""
+    cfg = cfg or get_config()
+    tenant = _entra_tenant_id(cfg)
+    path = safe_return_path(return_to, "/employee")
+    app = (cfg.get("app_url") or "").rstrip("/")
+    post_logout = quote(f"{app}{path}", safe="")
+    return (
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/logout"
+        f"?post_logout_redirect_uri={post_logout}"
+    )
 
 
 def consume_pending(request_id: str) -> Optional[dict]:
