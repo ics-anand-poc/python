@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Deploy talentscope-python (standalone repo) into the VM's talentscope-dev stack.
+# Only develop is allowed. Layout on VM:
+#   /opt/talentscope-dev/docker-compose.azure.yml
+#   /opt/talentscope-dev/.env.local
+#   /opt/talentscope-dev/python/   <- this repo synced here
+#   /opt/talentscope-dev/ui/
+
 if [[ "${GITHUB_REF:-}" != "refs/heads/develop" ]]; then
   echo "Development deployment is allowed from develop only." >&2
   exit 1
@@ -12,20 +19,27 @@ if [[ -z "${GITHUB_SHA:-}" ]]; then
 fi
 
 SRC="$(git rev-parse --show-toplevel)"
-DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev/talentscope-python}"
-APP_DIR="$DEPLOY_ROOT/"
-ENV_FILE="$DEPLOY_ROOT/.env.azure"
-COMPOSE_FILE="$DEPLOY_ROOT/docker-compose.azure.yml"
+DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev}"
+APP_DIR="${APP_DIR:-$DEPLOY_ROOT/python}"
+ENV_FILE="${ENV_FILE:-}"
+if [[ -z "$ENV_FILE" ]]; then
+  if [[ -f "$DEPLOY_ROOT/.env.local" ]]; then
+    ENV_FILE="$DEPLOY_ROOT/.env.local"
+  else
+    ENV_FILE="$DEPLOY_ROOT/.env.azure"
+  fi
+fi
+COMPOSE_FILE="${COMPOSE_FILE:-$DEPLOY_ROOT/docker-compose.azure.yml}"
 SERVICE=python
 IMAGE=talentscope-api:latest
-ROLLBACK_IMAGE=talentscope-api:production-rollback
+ROLLBACK_IMAGE=talentscope-api:dev-rollback
 SHA="${GITHUB_SHA:0:12}"
 CANDIDATE_IMAGE="talentscope-api:deploy-$SHA"
-LOCK_FILE=/tmp/talentscope-production-deploy.lock
+LOCK_FILE=/tmp/talentscope-dev-python-deploy.lock
 
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-  echo "Another TalentScope deployment is running; retry after it finishes." >&2
+  echo "Another TalentScope-dev Python deployment is running; retry after it finishes." >&2
   exit 1
 fi
 
@@ -52,16 +66,16 @@ rsync -a --delete --checksum \
   --exclude='/.pytest_cache/' --exclude='/**/__pycache__/' --exclude='*.pyc' \
   "$SRC/" "$APP_DIR/"
 
-PREVIOUS_CONTAINER="$("${COMPOSE[@]}" ps -q "$SERVICE")"
+PREVIOUS_CONTAINER="$("${COMPOSE[@]}" ps -q "$SERVICE" || true)"
 PREVIOUS_IMAGE_REF=""
-if [[ -n "$PREVIOUS_CONTAINER" ]]; then
+if [[ -n "${PREVIOUS_CONTAINER:-}" ]]; then
   PREVIOUS_IMAGE_ID="$(docker inspect --format='{{.Image}}' "$PREVIOUS_CONTAINER")"
   PREVIOUS_IMAGE_REF="$(docker inspect --format='{{.Config.Image}}' "$PREVIOUS_CONTAINER")"
   docker image tag "$PREVIOUS_IMAGE_ID" "$ROLLBACK_IMAGE"
 fi
 
-echo "== Build API image"
-if ! docker build --tag "$CANDIDATE_IMAGE" "$APP_DIR"; then
+echo "== Build API image (context=$DEPLOY_ROOT, dockerfile=python/Dockerfile)"
+if ! docker build --tag "$CANDIDATE_IMAGE" -f "$APP_DIR/Dockerfile" "$DEPLOY_ROOT"; then
   echo "API image build failed; the running service was not changed." >&2
   exit 1
 fi
@@ -116,10 +130,10 @@ fi
 if ! printf '%s\n' "$SHA" > "$DEPLOY_ROOT/DEPLOYED_COMMIT-python"; then
   echo "Warning: could not write the API deployment marker." >&2
 fi
-if ! docker image rm "$CANDIDATE_IMAGE" >/dev/null; then
+if ! docker image rm "$CANDIDATE_IMAGE" >/dev/null 2>&1; then
   echo "Warning: could not remove candidate image $CANDIDATE_IMAGE." >&2
 fi
 if [[ -n "$PREVIOUS_IMAGE_REF" ]]; then
-  docker image rm "$ROLLBACK_IMAGE" >/dev/null || echo "Warning: could not remove rollback image $ROLLBACK_IMAGE." >&2
+  docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || echo "Warning: could not remove rollback image $ROLLBACK_IMAGE." >&2
 fi
 echo "== API development deployment OK: $SHA is live"
