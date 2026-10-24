@@ -1,20 +1,23 @@
 name: Python API - Deploy to Azure Development
 
+# Code is taken from the develop branch only (no main / other branches).
 on:
+  push:
+    branches: [develop]
   workflow_dispatch:
     inputs:
       confirm_development:
         description: Confirm deployment of develop to Development
         required: true
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    if: github.ref == 'refs/heads/develop' && inputs.confirm_development == true
+    if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || inputs.confirm_development == true)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,12 +33,12 @@ jobs:
   deploy:
     name: Deploy API on ICSBETINTAPP01
     needs: validate
-    if: github.ref == 'refs/heads/develop' && inputs.confirm_development == true
+    if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || inputs.confirm_development == true)
     runs-on: [self-hosted, linux, icsbetintapp01]
     environment: development
     timeout-minutes: 45
     concurrency:
-      group: talentscope-production-deploy
+      group: talentscope-dev-python-deploy
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
