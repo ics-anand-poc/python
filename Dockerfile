@@ -1,4 +1,5 @@
-# TalentScope Python API (FastAPI + pyodbc)
+# ── TalentScope Python API (FastAPI + pyodbc) ──
+# Build context: repo root (so .env.local is accessible at runtime via volume)
 
 FROM python:3.11-slim AS base
 
@@ -22,11 +23,13 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python deps
-COPY requirements.txt ./
+COPY python/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy application code (includes python/db migrations + seed tooling)
+COPY python/ ./
+# Copy root .env.example as fallback (real .env.local mounted at runtime)
+COPY .env.example /app/.env.local
 
 # Ensure uploads dir exists
 RUN mkdir -p /app/uploads
@@ -35,4 +38,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "entrypoint.sh"]

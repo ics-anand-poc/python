@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Union
 
-from core.config import mssql_settings
+from core.config import db_target, env, mssql_settings, supabase_settings
 
 JSON_COLUMNS = {
     "employees": {"badges"},
@@ -16,6 +16,19 @@ JSON_COLUMNS = {
     "portal_settings": {"value"},
     "evaluations": {"bloom_scores", "bloom_submissions", "bloom_graded"},
     "candidate_interview_data": {"evaluation"},
+    "question_sets": {"items"},
+}
+
+POSTGRES_JSON_COLUMNS = {
+    "resumes": {"parsed", "analysis", "enhanced", "report"},
+    "portal_settings": {"value"},
+    "employees": {"badges"},
+    "tests": {"in_progress", "proctoring", "ai_analysis"},
+    "audit_logs": {"details"},
+    "candidate_interview_data": {"evaluation"},
+    "test_questions": {"options"},
+    "evaluations": {"bloom_scores", "bloom_submissions", "bloom_graded"},
+    "question_sets": {"items"},
 }
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -391,19 +404,258 @@ class MssqlStore(Store):
         keys = [key] if isinstance(key, str) else list(key)
         json_cols = JSON_COLUMNS.get(table, set())
         data = dict(row)
-        updatable = [c for c in data if c not in keys]
-        where_sql = " AND ".join(f"{ident(k)} = ?" for k in keys)
-        key_params = [encode_value(k, data[k], set()) for k in keys]
-        if updatable:
-            set_sql = ", ".join(f"{ident(c)} = ?" for c in updatable)
-            update_params = [encode_value(c, data[c], json_cols) for c in updatable]
-            updated = self._run(f"UPDATE [dbo].{ident(table)} SET {set_sql} WHERE {where_sql}",
-                                tuple(update_params + key_params), False)
+        key_filter = {k: data[k] for k in keys}
+        # Prefer existence check: pyodbc rowcount is often -1 after UPDATE, which used to
+        # trigger a duplicate INSERT and PK violations (e.g. portal_settings).
+        if self.first(table, key_filter):
+            updatable = {c: data[c] for c in data if c not in keys}
+            if updatable:
+                self.update(table, updatable, key_filter)
         else:
-            updated = 1 if self.count(table, {k: data[k] for k in keys}) else 0
-        if not updated or int(updated) <= 0:
             self._insert_one(table, data)
-        return self.first(table, {k: data[k] for k in keys}) or decode_row(table, data)
+        return self.first(table, key_filter) or decode_row(table, data)
+
+
+class SupabaseStore(Store):
+    def __init__(self, settings: Optional[dict] = None):
+        self.settings = settings or supabase_settings()
+        missing = [name for name in ("url", "service_role_key") if not self.settings.get(name)]
+        if missing:
+            missing_env = {
+                "url": "NEXT_PUBLIC_SUPABASE_URL",
+                "service_role_key": "SUPABASE_SERVICE_ROLE_KEY",
+            }
+            raise ValueError("Missing Supabase API setting(s): " +
+                             ", ".join(missing_env[name] for name in missing))
+        if not self.settings["url"].startswith("https://"):
+            raise ValueError("Supabase URL must use HTTPS")
+
+        import httpx
+
+        self.client = httpx.Client(
+            base_url=self.settings["url"] + "/rest/v1/",
+            headers={
+                "apikey": self.settings["service_role_key"],
+                "Authorization": f"Bearer {self.settings['service_role_key']}",
+                "Accept-Profile": "public",
+                "Content-Profile": "public",
+            },
+            timeout=float(self.settings.get("timeout_s") or 20),
+        )
+
+    @staticmethod
+    def _ident(name: str) -> str:
+        if not IDENT_RE.fullmatch(name):
+            raise ValueError(f"Invalid identifier: {name}")
+        return name
+
+    @classmethod
+    def _table(cls, name: str) -> str:
+        if not IDENT_RE.fullmatch(name):
+            raise ValueError(f"Invalid identifier: {name}")
+        return name
+
+    def _request(self, method: str, table: str, params=None, payload=None, prefer: str | None = None):
+        table_path = self._table(table)
+        headers = {"Prefer": prefer} if prefer else None
+        response = self.client.request(
+            method,
+            table_path,
+            params=params,
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+        if response.status_code == 204 or not response.content:
+            return response, []
+        data = response.json()
+        return response, data if isinstance(data, list) else [data]
+
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        raise NotImplementedError("Raw SQL is not supported by the Supabase Data API")
+
+    def execute(self, sql: str, params: tuple = ()) -> int:
+        raise NotImplementedError("Raw SQL is not supported by the Supabase Data API")
+
+    def ping(self) -> bool:
+        try:
+            self._request("GET", "resumes", [("select", "id"), ("limit", "0")])
+            return True
+        except Exception:
+            return False
+
+    def pool_stats(self) -> dict:
+        return {"max": 0, "idle": 0, "inUse": 0}
+
+    @staticmethod
+    def _filter_value(value: Any) -> str:
+        if isinstance(value, (dict, list)):
+            import json
+
+            value = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        elif isinstance(value, bool):
+            value = "true" if value else "false"
+        elif value is None:
+            value = "null"
+        elif isinstance(value, (datetime, date)):
+            value = value.isoformat()
+        elif isinstance(value, uuid.UUID):
+            value = str(value)
+        elif isinstance(value, Decimal):
+            value = str(value)
+        else:
+            value = str(value)
+        if any(char in value for char in ',()"\\') or value.strip() != value:
+            value = '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return value
+
+    def _where(self, table: str, where: list[tuple]) -> list[tuple[str, str]]:
+        filters = []
+        for col, op, val in where:
+            c = self._ident(col)
+            if op == "is_null":
+                expression = "is.null"
+            elif op == "not_null":
+                expression = "not.is.null"
+            elif op in ("in", "not_in"):
+                vals = list(val or [])
+                if not vals:
+                    continue
+                values = ",".join(self._filter_value(item) for item in vals)
+                expression = f"{'in' if op == 'in' else 'not.in'}.({values})"
+            elif op == "ilike":
+                expression = f"ilike.{self._filter_value(val)}"
+            elif op == "like":
+                expression = f"like.{self._filter_value(val)}"
+            elif op in OPS:
+                pg_op = {"neq": "neq", "gt": "gt", "gte": "gte", "lt": "lt", "lte": "lte", "eq": "eq"}[op]
+                expression = f"{pg_op}.{self._filter_value(val)}"
+            else:
+                raise ValueError(f"Unsupported operator: {op}")
+            filters.append((c, expression))
+        return filters
+
+    def _split_big_in(self, where: list[tuple]):
+        for i, (col, op, val) in enumerate(where):
+            if op == "in" and len(val or []) > MAX_IN:
+                vals = list(val)
+                for start in range(0, len(vals), MAX_IN):
+                    yield where[:i] + [(col, "in", vals[start:start + MAX_IN])] + where[i + 1:]
+                return
+        yield where
+
+    @staticmethod
+    def _value(table: str, column: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if column in POSTGRES_JSON_COLUMNS.get(table, set()):
+            import json
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except ValueError:
+                    return value
+            return value
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, datetime) and value.tzinfo is None and (
+            column.endswith("_at") or column.endswith("_date")
+        ):
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, (uuid.UUID, Decimal)):
+            return str(value) if isinstance(value, uuid.UUID) else float(value)
+        if isinstance(value, str) and (column.endswith("_at") or column.endswith("_date")) and ISO_VALUE_RE.match(value):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.replace(tzinfo=timezone.utc).isoformat() if parsed.tzinfo is None else parsed.astimezone(timezone.utc).isoformat()
+            except ValueError:
+                return value
+        return value
+
+    def select(self, table, where=None, columns=None, order=None, limit=None, offset=None):
+        w = normalize_where(where)
+        chunks = list(self._split_big_in(w))
+        if len(chunks) > 1:
+            rows = []
+            for chunk in chunks:
+                rows.extend(self.select(table, chunk, columns, order, None, None))
+            for col, desc in reversed(normalize_order(order)):
+                rows.sort(key=lambda row: (row.get(col) is None, row.get(col)), reverse=desc)
+            start = offset or 0
+            return rows[start:start + limit] if limit is not None else rows[start:]
+
+        cols = normalize_columns(columns)
+        params = [("select", ",".join(self._ident(col) for col in cols) if cols else "*")]
+        params.extend(self._where(table, w))
+        order_items = normalize_order(order)
+        if order_items:
+            params.append(("order", ",".join(
+                f"{self._ident(col)}.{'desc' if desc else 'asc'}" for col, desc in order_items
+            )))
+        if limit is not None:
+            params.append(("limit", str(int(limit))))
+        if offset is not None:
+            params.append(("offset", str(int(offset))))
+        _, rows = self._request("GET", table, params)
+        return [decode_row(table, row) for row in rows]
+
+    def count(self, table, where=None):
+        params = [("select", "id")] + self._where(table, normalize_where(where))
+        response, _ = self._request("HEAD", table, params, prefer="count=exact")
+        content_range = response.headers.get("content-range", "")
+        total = content_range.rsplit("/", 1)[-1]
+        if not total.isdigit():
+            raise RuntimeError("Supabase count response did not include an exact total")
+        return int(total)
+
+    def _insert_one(self, table: str, row: dict) -> dict:
+        data = dict(row)
+        if table != "portal_settings" and not data.get("id"):
+            data["id"] = str(uuid.uuid4())
+        payload = {col: self._value(table, col, value) for col, value in data.items()}
+        _, rows = self._request("POST", table, payload=payload, prefer="return=representation")
+        return decode_row(table, rows[0]) if rows else decode_row(table, data)
+
+    def insert(self, table, rows):
+        items = [rows] if isinstance(rows, dict) else list(rows)
+        return [self._insert_one(table, row) for row in items]
+
+    def update(self, table, values, where):
+        if not values:
+            return 0
+        payload = {col: self._value(table, col, value) for col, value in values.items()}
+        total = 0
+        for chunk in self._split_big_in(normalize_where(where)):
+            _, rows = self._request("PATCH", table, self._where(table, chunk), payload, "return=representation")
+            total += len(rows)
+        return total
+
+    def delete(self, table, where):
+        total = 0
+        for chunk in self._split_big_in(normalize_where(where)):
+            _, rows = self._request("DELETE", table, self._where(table, chunk), prefer="return=representation")
+            total += len(rows)
+        return total
+
+    def upsert(self, table, row, key):
+        keys = [key] if isinstance(key, str) else list(key)
+        data = dict(row)
+        if table != "portal_settings" and not data.get("id"):
+            data["id"] = str(uuid.uuid4())
+        params = [("on_conflict", ",".join(self._ident(col) for col in keys))]
+        payload = {col: self._value(table, col, value) for col, value in data.items()}
+        result = self._request(
+            "POST",
+            table,
+            params,
+            payload,
+            "resolution=merge-duplicates,return=representation",
+        )[1]
+        if result:
+            return decode_row(table, result[0])
+        return self.first(table, {col: data[col] for col in keys}) or decode_row(table, data)
 
 
 def _match(row: dict, where: list[tuple]) -> bool:
@@ -522,7 +774,8 @@ def get_store() -> Store:
     if _store is None:
         with _store_lock:
             if _store is None:
-                _store = MssqlStore()
+                use_supabase = db_target() == "SUPABASE" or env("DB_PROVIDER").lower() == "supabase"
+                _store = SupabaseStore() if use_supabase else MssqlStore()
     return _store
 
 

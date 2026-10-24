@@ -17,6 +17,8 @@ services:
         value: production
       - key: UPLOAD_DIR
         value: /app/uploads
+      - key: DB_TARGET
+        value: MSSQL
       - key: MSSQL_TARGET
         value: azure
       - key: MSSQL_AZURE_PORT

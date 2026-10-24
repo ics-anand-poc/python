@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_any_permission, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from services import admin_accounts, corp_pool, docs_storage, portal_roster as pr, test_video
@@ -15,7 +15,11 @@ from services.products import format_topic_title_for_display
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin/employees", tags=["admin-employees"], dependencies=[Depends(require_admin)])
+router = APIRouter(
+    prefix="/api/admin/employees",
+    tags=["admin-employees"],
+    dependencies=[Depends(require_any_permission("corpPool", "employeePortal"))],
+)
 
 TEST_COLUMNS = ["id", "employee_id", "employee_code", "status", "topic_id", "subject_id", "difficulty", "total_questions", "score_correct",
                 "score_total", "score_percent", "session_recording_url", "proctoring", "started_at", "completed_at", "topic_title", "subject_title"]
@@ -97,7 +101,7 @@ def _apply_jd_match(roster: list[dict], jd_id) -> list[dict]:
 @router.get("")
 def list_employees(request: Request):
     try:
-        email = (request.query_params.get("email") or "").strip().lower()
+        email = acting_admin_email(request) or ""
         hide_portal = bool(email) and not admin_accounts.get_access(email)["canViewEmployeePortal"]
         deleted = corp_pool.load_deleted()
         roster = [e for e in corp_pool.load_roster() if not corp_pool.is_deleted(deleted, e["employee_id"], e.get("source_file", ""))]
@@ -267,7 +271,7 @@ def as_uuid_ok(value: str) -> bool:
     return bool(pr.UUID_RE.match(value or ""))
 
 
-@router.post("/reset-test")
+@router.post("/reset-test", dependencies=[Depends(require_permission("employeePortal"))])
 def reset_test(body: dict = Body(default_factory=dict)):
     test_id, employee_id = str(body.get("testId") or "").strip(), str(body.get("employeeId") or "").strip()
     if not test_id and not employee_id:
@@ -293,7 +297,7 @@ def reset_test(body: dict = Body(default_factory=dict)):
         return public_error(err, "Internal error")
 
 
-@router.post("/delete-video")
+@router.post("/delete-video", dependencies=[Depends(require_permission("employeePortal"))])
 def delete_video(body: dict = Body(default_factory=dict)):
     try:
         items = body.get("items") if isinstance(body.get("items"), list) else None
@@ -356,7 +360,7 @@ def dispatch_mail(request: Request, body: dict = Body(default_factory=dict)):
 
     ip = get_client_ip(request)
     try:
-        requester = body.get("adminEmail") or "admin@infinite.com"
+        requester = acting_admin_email(request) or "unknown"
         portal_mode = body.get("portal") is True
         origin = app_url()
         portal_url = f"{origin}/employee?org=BizX" if portal_mode else origin
@@ -389,10 +393,22 @@ def dispatch_mail(request: Request, body: dict = Body(default_factory=dict)):
                     "enhanced": None, "report": {"rmEmail": requester, "verification": None}, "error": None,
                     "fileHash": f"emp_{emp['employee_id']}_hash", "fileBase64": None})
                 sessions.create_candidate_session(emp["email"], resume_id)
-            subject = "Assessment Invitation - TalentScope"
-            hint = (f"Login with Employee ID: <strong>{escape(emp['employee_id'])}</strong>" if portal_mode
-                    else f"Login email address: <strong>{escape(emp['email'])}</strong>")
-            html = build_invite_html(emp["full_name"], hint, portal_url, "technical")
+            if portal_mode:
+                from services.portal_invite_mail import build_portal_invite_html
+
+                subject = "Product Assessment Assignment - Employee Learning Portal"
+                html = build_portal_invite_html(
+                    emp["full_name"],
+                    emp["employee_id"],
+                    temporary_password=emp["employee_id"],
+                    portal_url=origin if origin.endswith("talentscope.infinite.com") else "https://talentscope.infinite.com/",
+                    deadline=(body.get("deadline") if isinstance(body, dict) else None),
+                    product_hint=(body.get("productHint") if isinstance(body, dict) else None) or emp.get("department") or "for example, HLR-HSS",
+                )
+            else:
+                subject = "Assessment Invitation - TalentScope"
+                hint = f"Login email address: <strong>{escape(emp['email'])}</strong>"
+                html = build_invite_html(emp["full_name"], hint, portal_url, "technical")
             status, _ = mailer.dispatch(emp["email"], subject, html)
             mailer.record(emp["email"], emp["full_name"], subject, html, status, requester)
             audit.add_log(requester, "ADMIN_INVITE_PORTAL_EMPLOYEE" if portal_mode else "ADMIN_INVITE_EMPLOYEE", emp["email"],
@@ -505,13 +521,13 @@ def export_shortlisted(body: dict = Body(default_factory=dict)):
         return public_error(err, "Export failed")
 
 
-@router.get("/export-portal")
+@router.get("/export-portal", dependencies=[Depends(require_permission("employeePortal"))])
 def export_portal(request: Request):
     from datetime import date
 
     from services import exports
 
-    email = (request.query_params.get("email") or "").strip().lower()
+    email = acting_admin_email(request) or ""
     if email and not admin_accounts.get_access(email)["canViewEmployeePortal"]:
         return json_error(403, "Employee Portal is not available for this login.")
     try:

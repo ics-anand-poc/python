@@ -1,14 +1,17 @@
+import hashlib
 import json
 import os
+import re
 import threading
 import time
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from core.config import UPLOAD_DIR, env
 from core.db import MssqlStore, get_store
-from services import llm
+from services import llm, question_queue
 
 CACHE_S = 8.0
 STALE_AFTER_S = 180
@@ -33,8 +36,8 @@ def section(fn: Callable[[], Any]) -> dict:
         return {"ok": False, "error": message[:300], "needsPermission": any(h in message.lower() for h in PERMISSION_HINTS)}
 
 
-def rows(sql: str) -> list[dict]:
-    return get_store().query("SET NOCOUNT ON;\n" + sql)
+def rows(sql: str, params: tuple = ()) -> list[dict]:
+    return get_store().query("SET NOCOUNT ON;\n" + sql, params)
 
 
 def read_json(name: str):
@@ -74,13 +77,12 @@ def app_runtime() -> dict:
     from core import security
 
     store = get_store()
-    return {"llm": llm.stats(), "traffic": security.traffic_snapshot(),
+    return {"llm": llm.stats(), "traffic": security.traffic_snapshot(), "questionQueue": question_queue.snapshot(),
             "dbPool": store.pool_stats() if isinstance(store, MssqlStore) else None}
 
 
 def collect_vm() -> dict:
     snapshot, modified, error = read_json("snapshot.json")
-    history, _, _ = read_json("history.json")
     age = round((datetime.now(timezone.utc) - modified).total_seconds()) if modified else None
     try:
         live = live_readings()
@@ -90,7 +92,7 @@ def collect_vm() -> dict:
             "collector": {"available": snapshot is not None, "dir": str(monitor_dir()),
                           "snapshotAt": modified.isoformat() if modified else None, "ageSeconds": age,
                           "stale": age is None or age > STALE_AFTER_S, "error": error},
-            "live": live, "snapshot": snapshot, "history": history or [], "runtime": app_runtime()}
+            "live": live, "snapshot": snapshot, "runtime": app_runtime()}
 
 
 def measure_latency() -> dict:
@@ -242,18 +244,229 @@ def compare_with_other_db(current: str):
     return {"database": other, "tables": tables}
 
 
+_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SECRET = re.compile(r"password|passwd|secret|token|salt|hash|credential", re.I)
+_COMPARE_TYPES = {
+    "bigint", "int", "smallint", "tinyint", "bit", "decimal", "numeric", "money", "smallmoney", "float", "real",
+    "date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "time",
+    "char", "varchar", "nchar", "nvarchar", "uniqueidentifier", "xml",
+}
+_DIFF_LIMIT = 25
+
+
+def _sql_name(value: str) -> str:
+    if not _NAME.match(value or ""):
+        raise ValueError("Invalid SQL name")
+    return f"[{value}]"
+
+
+def _type_label(column: dict) -> str:
+    kind = str(column.get("typeName") or "")
+    length = int(column.get("maxLength") or 0)
+    if kind in ("nvarchar", "nchar"):
+        length = length // 2
+    if length < 0 or kind in ("xml", "text", "ntext"):
+        sized = "max" if kind in ("varchar", "nvarchar", "varbinary") else kind
+        return f"{kind}(max)" if kind in ("varchar", "nvarchar", "varbinary") else sized
+    if kind in ("varchar", "nvarchar", "char", "nchar", "binary", "varbinary"):
+        return f"{kind}({length})"
+    return kind
+
+
+def _table_columns(database: str, table: str) -> list[dict]:
+    return rows(f"""
+        SELECT c.name AS name, ty.name AS typeName, c.max_length AS maxLength, c.is_nullable AS nullable
+        FROM {_sql_name(database)}.sys.columns c
+        JOIN {_sql_name(database)}.sys.types ty ON ty.user_type_id = c.user_type_id
+        WHERE c.object_id = OBJECT_ID(N'{database}.dbo.{table}')
+        ORDER BY c.column_id""")
+
+
+def _primary_key(database: str, table: str) -> list[str]:
+    found = rows(f"""
+        SELECT c.name AS name
+        FROM {_sql_name(database)}.sys.indexes i
+        JOIN {_sql_name(database)}.sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        JOIN {_sql_name(database)}.sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+        WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID(N'{database}.dbo.{table}')
+        ORDER BY ic.key_ordinal""")
+    return [str(row["name"]) for row in found if _NAME.match(str(row.get("name") or ""))]
+
+
+def _display(column: str, value: Any) -> Any:
+    if _SECRET.search(column):
+        return None if value in (None, "") else "(hidden)"
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return f"{len(value)} bytes"
+    if isinstance(value, Decimal):
+        value = str(value)
+    elif hasattr(value, "isoformat"):
+        value = value.isoformat()
+    text = value if isinstance(value, str) else str(value)
+    return text if len(text) <= 240 else text[:240] + "…"
+
+
+def _same(left: Any, right: Any) -> bool:
+    if isinstance(left, (bytes, bytearray)) or isinstance(right, (bytes, bytearray)):
+        return hashlib.sha256(bytes(left or b"")).digest() == hashlib.sha256(bytes(right or b"")).digest() and type(left) is type(right)
+    if hasattr(left, "isoformat"):
+        left = left.isoformat()
+    if hasattr(right, "isoformat"):
+        right = right.isoformat()
+    if isinstance(left, Decimal):
+        left = str(left)
+    if isinstance(right, Decimal):
+        right = str(right)
+    return left == right
+
+
+def _key_label(columns: list[str], row: dict) -> str:
+    return ", ".join(f"{column}={_display(column, row.get(column))}" for column in columns)
+
+
+def _schema_changes(current_cols: list[dict], other_cols: list[dict], current: str, other: str) -> list[dict]:
+    left = {str(col["name"]): col for col in current_cols if _NAME.match(str(col.get("name") or ""))}
+    right = {str(col["name"]): col for col in other_cols if _NAME.match(str(col.get("name") or ""))}
+    changes = []
+    for name in sorted(set(left) | set(right)):
+        a, b = left.get(name), right.get(name)
+        if a and not b:
+            changes.append({"column": name, "change": f"only in {current}", "currentType": _type_label(a)})
+        elif b and not a:
+            changes.append({"column": name, "change": f"only in {other}", "otherType": _type_label(b)})
+        elif _type_label(a) != _type_label(b) or bool(a.get("nullable")) != bool(b.get("nullable")):
+            changes.append({
+                "column": name, "change": "type or nullability differs",
+                "currentType": _type_label(a), "otherType": _type_label(b),
+                "currentNullable": bool(a.get("nullable")), "otherNullable": bool(b.get("nullable")),
+            })
+    return changes
+
+
+def _row_where(keys: list[str]) -> str:
+    return " AND ".join(f"src.{_sql_name(key)} = ?" for key in keys)
+
+
+def _preview_row(row: dict, columns: list[str], keys: list[str]) -> dict:
+    shown = [column for column in columns if column not in keys][:6]
+    return {"key": _key_label(keys, row), "fields": {column: _display(column, row.get(column)) for column in shown}}
+
+
+def compare_table_detail(table: str) -> dict:
+    if not _NAME.match(table or ""):
+        raise ValueError("Choose a table name")
+    store = get_store()
+    if not isinstance(store, MssqlStore):
+        raise ValueError("SQL Server is not configured")
+    current = str((rows("SELECT DB_NAME() AS name") or [{"name": ""}])[0].get("name") or "")
+    other = compare_database()
+    if not _NAME.match(current) or not _NAME.match(other) or current == other:
+        raise ValueError("The two databases are not available to compare")
+    if not rows("SELECT 1 AS ok FROM sys.databases WHERE name = ? AND state_desc = 'ONLINE'", (other,)):
+        raise ValueError(f"{other} is not online")
+    current_id = rows("SELECT OBJECT_ID(?) AS id", (f"{current}.dbo.{table}",))
+    other_id = rows("SELECT OBJECT_ID(?) AS id", (f"{other}.dbo.{table}",))
+    in_current = bool(current_id and current_id[0].get("id"))
+    in_other = bool(other_id and other_id[0].get("id"))
+    current_cols = _table_columns(current, table) if in_current else []
+    other_cols = _table_columns(other, table) if in_other else []
+    detail = {
+        "table": table, "current": current, "other": other,
+        "inCurrent": in_current, "inOther": in_other,
+        "schema": _schema_changes(current_cols, other_cols, current, other),
+        "key": [], "onlyInCurrent": [], "onlyInOther": [], "changed": [],
+        "truncated": False, "note": "",
+    }
+    if not in_current or not in_other:
+        detail["note"] = f"This table exists only in {current if in_current else other}."
+        return detail
+    keys = _primary_key(current, table)
+    other_keys = _primary_key(other, table)
+    if keys != other_keys:
+        shared = [name for name in keys if name in other_keys]
+        keys = shared or ([ "id" ] if any(col["name"] == "id" for col in current_cols) and any(col["name"] == "id" for col in other_cols) else [])
+    elif not keys and any(col["name"] == "id" for col in current_cols) and any(col["name"] == "id" for col in other_cols):
+        keys = ["id"]
+    detail["key"] = keys
+    names = [str(col["name"]) for col in current_cols if _NAME.match(str(col.get("name") or ""))]
+    if not keys:
+        detail["note"] = "This table has no primary key, so individual rows cannot be lined up. The row-count difference is still shown in the table list."
+        return detail
+    comparable = [
+        col for col in current_cols
+        if str(col.get("name")) in names and str(col.get("typeName")) in _COMPARE_TYPES
+        and any(other["name"] == col["name"] and other.get("typeName") == col.get("typeName") for other in other_cols)
+    ]
+    key_sql = ", ".join(_sql_name(key) for key in keys)
+    current_from = f"{_sql_name(current)}.dbo.{_sql_name(table)}"
+    other_from = f"{_sql_name(other)}.dbo.{_sql_name(table)}"
+    only_current = rows(f"SELECT TOP {_DIFF_LIMIT + 1} {key_sql} FROM (SELECT {key_sql} FROM {current_from} EXCEPT SELECT {key_sql} FROM {other_from}) d")
+    only_other = rows(f"SELECT TOP {_DIFF_LIMIT + 1} {key_sql} FROM (SELECT {key_sql} FROM {other_from} EXCEPT SELECT {key_sql} FROM {current_from}) d")
+    if len(only_current) > _DIFF_LIMIT or len(only_other) > _DIFF_LIMIT:
+        detail["truncated"] = True
+    preview_cols = names[:8]
+
+    def load_side(database: str, key_rows: list[dict]) -> list[dict]:
+        loaded = []
+        for key_row in key_rows[:_DIFF_LIMIT]:
+            values = tuple(key_row.get(key) for key in keys)
+            found = rows(
+                f"SELECT TOP 1 {', '.join(_sql_name(column) for column in preview_cols)} FROM {_sql_name(database)}.dbo.{_sql_name(table)} AS src WHERE {_row_where(keys)}",
+                values,
+            )
+            if found:
+                loaded.append(_preview_row({**key_row, **found[0]}, preview_cols, keys))
+        return loaded
+
+    detail["onlyInCurrent"] = load_side(current, only_current)
+    detail["onlyInOther"] = load_side(other, only_other)
+    if comparable:
+        checks = []
+        for column in comparable:
+            quoted = _sql_name(str(column["name"]))
+            checks.append(
+                f"(a.{quoted} IS NULL AND b.{quoted} IS NOT NULL) OR (a.{quoted} IS NOT NULL AND b.{quoted} IS NULL) "
+                f"OR ISNULL(DATALENGTH(a.{quoted}), -1) <> ISNULL(DATALENGTH(b.{quoted}), -1) "
+                f"OR ISNULL(CONVERT(nvarchar(400), a.{quoted}), N'<NULL>') <> ISNULL(CONVERT(nvarchar(400), b.{quoted}), N'<NULL>')"
+            )
+        changed_keys = rows(
+            f"SELECT TOP {_DIFF_LIMIT + 1} {', '.join(f'a.{_sql_name(key)} AS {_sql_name(key)}' for key in keys)} "
+            f"FROM {current_from} a INNER JOIN {other_from} b ON "
+            + " AND ".join(f"a.{_sql_name(key)} = b.{_sql_name(key)}" for key in keys)
+            + " WHERE " + " OR ".join(checks)
+        )
+        if len(changed_keys) > _DIFF_LIMIT:
+            detail["truncated"] = True
+        select_list = ", ".join(_sql_name(str(column["name"])) for column in comparable)
+        changed = []
+        for key_row in changed_keys[:_DIFF_LIMIT]:
+            values = tuple(key_row.get(key) for key in keys)
+            left = rows(f"SELECT TOP 1 {select_list} FROM {current_from} AS src WHERE {_row_where(keys)}", values)
+            right = rows(f"SELECT TOP 1 {select_list} FROM {other_from} AS src WHERE {_row_where(keys)}", values)
+            if not left or not right:
+                continue
+            columns = []
+            for column in comparable:
+                name = str(column["name"])
+                if _same(left[0].get(name), right[0].get(name)):
+                    continue
+                columns.append({"column": name, "current": _display(name, left[0].get(name)), "other": _display(name, right[0].get(name))})
+            if columns:
+                changed.append({"key": _key_label(keys, key_row), "columns": columns})
+        detail["changed"] = changed
+    if not detail["onlyInCurrent"] and not detail["onlyInOther"] and not detail["changed"] and not detail["schema"]:
+        detail["note"] = "No column or row differences were found for this table."
+    elif detail["truncated"]:
+        detail["note"] = f"Showing the first {_DIFF_LIMIT} differences."
+    return detail
+
+
 def storage_usage() -> list[dict]:
-    root = UPLOAD_DIR
-    out = []
-    for bucket in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
-        sizes = [f.stat().st_size for f in bucket.iterdir() if f.is_file() and not f.name.endswith(".part")]
-        times = [f.stat().st_mtime for f in bucket.iterdir() if f.is_file()]
-        if sizes:
-            out.append({"bucket": bucket.name, "files": len(sizes), "bytes": sum(sizes), "largestBytes": max(sizes),
-                        "avgBytes": sum(sizes) // len(sizes),
-                        "newest": datetime.fromtimestamp(max(times), timezone.utc).isoformat(),
-                        "oldest": datetime.fromtimestamp(min(times), timezone.utc).isoformat()})
-    return sorted(out, key=lambda b: b["bytes"], reverse=True)
+    from services import storage
+
+    return storage.usage_summary()
 
 
 def app_activity():
@@ -413,14 +626,188 @@ def collect_db() -> dict:
     return out
 
 
+HISTORY_DAYS = 7
+HISTORY_RETENTION_S = (HISTORY_DAYS + 1) * 86400
+MAX_WINDOW_S = 25 * 3600
+SHORT_WINDOW_S = 6 * 3600
+DB_SAMPLE_S = 60
+DB_PRUNE_S = 3600
+_sampler = {"started": False, "prev_batch": None, "last_prune": 0.0}
+_history_lock = threading.Lock()
+
+
+def db_history_path() -> Path:
+    return UPLOAD_DIR / "monitor" / "db-history.jsonl"
+
+
+def vm_history_path() -> Path:
+    return monitor_dir() / "history.jsonl"
+
+
+def parse_window(params, now: Optional[float] = None) -> tuple[int, int]:
+    now = time.time() if now is None else now
+    try:
+        start, end = float(params.get("from")), float(params.get("to"))
+    except (TypeError, ValueError):
+        start = end = 0.0
+    valid = end > start and end - start <= MAX_WINDOW_S and now - HISTORY_RETENTION_S - 86400 <= start <= now
+    return (int(start), int(end) + (0 if end == int(end) else 1)) if valid else (int(now) - SHORT_WINDOW_S, int(now))
+
+
+def read_history_file(path: Path) -> list[dict]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    points = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            point = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(point, dict) and isinstance(point.get("ts"), (int, float)):
+            points.append(point)
+    return points
+
+
+def downsample(points: list[dict], window: tuple[int, int]) -> dict:
+    start, end = window
+    bucket = 3600 if end - start > SHORT_WINDOW_S else 300
+    sums: dict[int, dict[str, list[float]]] = {}
+    for point in points:
+        if not start <= point["ts"] < end:
+            continue
+        key = start + int((point["ts"] - start) // bucket) * bucket
+        slot = sums.setdefault(key, {})
+        for name, value in point.items():
+            if name == "ts" or isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+                continue
+            total = slot.setdefault(name, [0.0, 0])
+            total[0] += value
+            total[1] += 1
+    out = []
+    for key in sorted(sums):
+        entry = {"ts": key, "t": datetime.fromtimestamp(key, timezone.utc).isoformat()}
+        entry.update({name: round(total / count, 2) for name, (total, count) in sums[key].items()})
+        out.append(entry)
+    return {"from": datetime.fromtimestamp(start, timezone.utc).isoformat(), "to": datetime.fromtimestamp(end, timezone.utc).isoformat(),
+            "bucketSeconds": bucket, "points": out,
+            "oldestAt": datetime.fromtimestamp(points[0]["ts"], timezone.utc).isoformat() if points else None,
+            "retentionDays": HISTORY_DAYS}
+
+
+def legacy_vm_history() -> list[dict]:
+    data, _, _ = read_json("history.json")
+    return [p for p in data if isinstance(p, dict) and isinstance(p.get("ts"), (int, float))] if isinstance(data, list) else []
+
+
+def history_points(target: str) -> list[dict]:
+    if target == "db":
+        return read_history_file(db_history_path())
+    return read_history_file(vm_history_path()) or legacy_vm_history()
+
+
+def _round(value, digits: int = 1):
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def db_point() -> dict:
+    now = int(time.time())
+    point: dict = {"ts": now, "t": datetime.fromtimestamp(now, timezone.utc).isoformat()}
+    started = time.perf_counter()
+    rows("SELECT 1 AS ok")
+    point["latencyMs"] = _round((time.perf_counter() - started) * 1000)
+    point["down"] = 0
+    space = rows("""
+        SELECT SUM(CASE WHEN type = 0 THEN CAST(size AS bigint) END) * 8 / 1024.0 AS dataMb,
+               SUM(CASE WHEN type = 0 THEN CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint) END) * 8 / 1024.0 AS dataUsedMb,
+               SUM(CASE WHEN type = 1 THEN CAST(size AS bigint) END) * 8 / 1024.0 AS logMb,
+               SUM(CASE WHEN type = 1 THEN CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint) END) * 8 / 1024.0 AS logUsedMb
+        FROM sys.database_files""")[0]
+    point["dataMb"], point["dataUsedMb"], point["logMb"] = _round(space.get("dataMb")), _round(space.get("dataUsedMb")), _round(space.get("logMb"))
+    point["logUsedPct"] = _round(100 * float(space["logUsedMb"]) / float(space["logMb"])) if space.get("logMb") else None
+    store = get_store()
+    if isinstance(store, MssqlStore):
+        point["poolInUse"] = store.pool_stats()["inUse"]
+    try:
+        counters = {r["counter"]: float(r["value"]) for r in rows(COUNTERS_SQL)}
+        point["userConnections"] = counters.get("User Connections")
+        point["blocked"] = counters.get("Processes blocked")
+        point["pageLifeSec"] = counters.get("Page life expectancy")
+        memory = counters.get("Total Server Memory (KB)")
+        point["sqlMemoryMb"] = _round(memory / 1024, 0) if memory is not None else None
+        batches = counters.get("Batch Requests/sec")
+        if batches is not None:
+            prev = _sampler["prev_batch"]
+            if prev and batches >= prev[1] and 0 < now - prev[0] < 600:
+                point["batchPerSec"] = _round((batches - prev[1]) / (now - prev[0]), 2)
+            _sampler["prev_batch"] = (now, batches)
+        cpu = rows(CPU_HISTORY_SQL)
+        if cpu:
+            point["sqlCpu"], point["otherCpu"] = cpu[0].get("sql"), cpu[0].get("other")
+    except Exception:
+        pass
+    return point
+
+
+def prune_db_history(path: Path) -> None:
+    since = time.time() - HISTORY_RETENTION_S
+    points = read_history_file(path)
+    if not points or points[0]["ts"] >= since:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(p, separators=(",", ":")) + "\n" for p in points if p["ts"] >= since), encoding="utf-8")
+    tmp.replace(path)
+
+
+def sample_db_once() -> None:
+    path = db_history_path()
+    try:
+        point = db_point()
+    except Exception as err:
+        now = int(time.time())
+        point = {"ts": now, "t": datetime.fromtimestamp(now, timezone.utc).isoformat(), "down": 1, "error": str(err)[:200]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _history_lock:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(point, separators=(",", ":")) + "\n")
+        if time.time() - _sampler["last_prune"] > DB_PRUNE_S:
+            _sampler["last_prune"] = time.time()
+            prune_db_history(path)
+
+
+def _sampler_loop() -> None:
+    time.sleep(20)
+    while True:
+        try:
+            sample_db_once()
+        except Exception:
+            pass
+        time.sleep(DB_SAMPLE_S)
+
+
+def start_db_sampler() -> bool:
+    if _sampler["started"] or not isinstance(get_store(), MssqlStore):
+        return False
+    _sampler["started"] = True
+    threading.Thread(target=_sampler_loop, daemon=True, name="db-history").start()
+    return True
+
+
 COLLECTORS = {"vm": collect_vm, "db": collect_db}
 
 
-def collect(target: str) -> dict:
+def collect(target: str, window: Optional[tuple[int, int]] = None) -> dict:
     with _locks[target]:
         hit = _cache.get(target)
         if hit and time.monotonic() - hit[0] < CACHE_S:
-            return hit[1]
-        body = COLLECTORS[target]()
-        _cache[target] = (time.monotonic(), body)
-        return body
+            body = hit[1]
+        else:
+            body = COLLECTORS[target]()
+            _cache[target] = (time.monotonic(), body)
+    return {**body, "history": downsample(history_points(target), window or parse_window({}))}

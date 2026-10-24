@@ -1,0 +1,45 @@
+name: Python API - Deploy to Azure Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: Confirm deployment of main to Production
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check Python syntax
+        run: python -m compileall -q .
+
+  deploy:
+    name: Deploy API on ICSBETINTAPP01
+    needs: validate
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production == true
+    runs-on: [self-hosted, linux, icsbetintapp01]
+    environment: production
+    timeout-minutes: 45
+    concurrency:
+      group: talentscope-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+      - name: Build, deploy, and verify API
+        run: bash .github/scripts/deploy-production.sh

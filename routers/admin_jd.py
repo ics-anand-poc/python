@@ -7,16 +7,16 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import get_client_ip, inspect_upload
-from services import admin_accounts, audit, deleted_requirements as deleted_req, jd_to_br, resumes
+from services import admin_accounts, audit, deleted_requirements as deleted_req, jd_to_br, question_gen, question_queue, resumes
 from services.dashboard_sync import bump_sync
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin", tags=["admin-jd"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", tags=["admin-jd"], dependencies=[Depends(require_permission("requirements"))])
 
 JD_EXTS = ("pdf", "doc", "docx", "txt", "html", "htm")
 JD_MAX = 10 * 1024 * 1024
@@ -52,7 +52,7 @@ def _ts(value) -> float:
 @router.get("/jd")
 def list_jds(request: Request):
     try:
-        email = (request.query_params.get("email") or "").lower().strip()
+        email = acting_admin_email(request) or ""
         deleted = deleted_req.load()
         rows = get_store().select("job_descriptions", order="created_at desc")
         jds = [_map(r) for r in rows if not deleted_req.is_deleted(deleted, r["id"], r.get("file_name"))]
@@ -126,6 +126,9 @@ async def save_jd(request: Request):
         write_log("requirements", "UPDATE_JD" if is_update else "CREATE_JD", "success",
                   f"Successfully {'updated' if is_update else 'created'} JD ID: {new_id} ({file_name}). Associated RM: {rm_email}")
         bump_sync("jd_update" if is_update else "jd_create")
+        for key in question_gen.bank_keys_for(jd_text):
+            if question_gen.bank_size(key) < question_gen.BANK_TARGET:
+                question_queue.enqueue_bank(key)
         return {"success": True, "jd": {"id": new_id, "jdText": jd_text.strip(), "rmEmail": rm, "fileName": file_name,
                                         "createdAt": created, "uploadBatch": None if is_update else created}}
     except Exception as err:

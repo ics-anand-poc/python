@@ -4,18 +4,18 @@ from html import escape
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import require_admin
+from core.auth import acting_admin_email, require_permission
 from core.config import app_url
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import get_client_ip
 from core.validation import as_uuid
-from services import admin_accounts, audit, mailer, reset_logs, resumes, sessions, storage
+from services import admin_accounts, audit, mailer, question_queue, reset_logs, resumes, sessions, storage
 from services.invite_mail import build_invite_html
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin/resumes", tags=["admin-resumes"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin/resumes", tags=["admin-resumes"], dependencies=[Depends(require_permission("candidates"))])
 
 MIME = {"pdf": "application/pdf", "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "txt": "text/plain"}
@@ -31,7 +31,7 @@ def _format_attempt(attempt: dict) -> dict:
 
 @router.get("")
 def list_resumes(request: Request):
-    email = (request.query_params.get("email") or "").lower().strip()
+    email = acting_admin_email(request) or ""
     try:
         items = resumes.list_resumes()
         if email and not admin_accounts.can_view_org_screening_data(email):
@@ -73,11 +73,12 @@ def batch_delete(request: Request, body: dict = Body(default_factory=dict)):
 
 
 @router.post("/reset_by_email")
-def reset_by_email(body: dict = Body(default_factory=dict)):
+def reset_by_email(request: Request, body: dict = Body(default_factory=dict)):
     raw = body.get("email")
     if not raw or not isinstance(raw, str):
         return json_error(400, "Email is required")
     clean = raw.lower().strip()
+    actor = acting_admin_email(request) or "unknown"
     try:
         match = next((r for r in resumes.list_resumes()
                       if str((r.get("parsed") or {}).get("personal", {}).get("email") or "").lower().strip() == clean), None)
@@ -86,7 +87,7 @@ def reset_by_email(body: dict = Body(default_factory=dict)):
             _clear_candidate(match["id"])
         if not session and not match:
             return json_error(404, f"No registered candidate session or CV record found for {clean}.")
-        reset_logs.add_log(clean, body.get("adminEmail") or "unknown@infinite.com", "Reset Form")
+        reset_logs.add_log(clean, actor, "Reset Form")
         write_log("candidate-processing", "RESET_CANDIDATE_BY_EMAIL", "success", f"Successfully reset candidate session and attempts for email {clean}")
         return {"success": True, "message": f"Session for {clean} has been reset successfully."}
     except Exception as err:
@@ -98,6 +99,7 @@ def _clear_candidate(resume_id: str) -> None:
     store = get_store()
     store.delete("interview_attempts", {"resume_id": resume_id})
     store.delete("interview_questions", {"resume_id": resume_id})
+    question_queue.reset(resume_id)
     resume = resumes.get_resume(resume_id, True)
     if resume and resume.get("report"):
         for key in ("videoUrl", "proctoring", "videoDuration"):
@@ -122,7 +124,8 @@ def delete_resume(resume_id: str, request: Request):
         return json_error(400, "Invalid resume id")
     try:
         resumes.delete_resume(rid)
-        audit.add_log("admin@infinite.com", "ADMIN_DELETE_RESUME", rid, f"Successfully deleted candidate resume ID: {rid}", get_client_ip(request))
+        actor = acting_admin_email(request) or "unknown"
+        audit.add_log(actor, "ADMIN_DELETE_RESUME", rid, f"Successfully deleted candidate resume ID: {rid}", get_client_ip(request))
         write_log("candidate-processing", "DELETE_CANDIDATE", "success", f"Successfully deleted candidate CV ID: {rid}")
         return {"success": True}
     except Exception as err:
@@ -137,9 +140,10 @@ def download(resume_id: str):
     rid = as_uuid(resume_id)
     if not rid:
         return json_error(400, "Invalid resume id")
-    stored = next((f for f in storage.bucket_dir("resumes").iterdir() if f.name.startswith(f"{rid}-")), None)
-    if stored:
-        data, name = stored.read_bytes(), stored.name[len(rid) + 1:]
+    stored = next((f for f in storage.bucket_dir("resumes").iterdir() if f.is_file() and f.name.startswith(f"{rid}-")), None)
+    data = storage.read("resumes", stored.name) if stored else None
+    if stored and data:
+        name = stored.name[len(rid) + 1:]
     else:
         row = get_store().first("resumes", {"id": rid}, ["filename", "file_base64"])
         if not row or not row.get("file_base64"):
@@ -183,12 +187,12 @@ def reset(resume_id: str, request: Request, body: dict = Body(default_factory=di
     if not email:
         return json_error(400, "Candidate email address not found in resume parsed structure")
     try:
-        admin_email = body.get("adminEmail") or "unknown@infinite.com"
+        actor = acting_admin_email(request) or "unknown"
         sessions.reset_session_by_email(email, rid)
         _clear_candidate(rid)
-        audit.add_log(admin_email, "ADMIN_RESET_RESUME", email, f"Cleared proctoring, questions, and attempts for candidate {email}", get_client_ip(request))
+        audit.add_log(actor, "ADMIN_RESET_RESUME", email, f"Cleared proctoring, questions, and attempts for candidate {email}", get_client_ip(request))
         write_log("candidate-processing", "RESET_CANDIDATE", "success", f"Cleared proctoring, questions, and attempts for candidate {email}")
-        reset_logs.add_log(email, admin_email, "Candidate Card")
+        reset_logs.add_log(email, actor, "Candidate Card")
         return {"success": True}
     except Exception as err:
         write_log("candidate-processing", "RESET_CANDIDATE_FAILED", "failed", str(err))
@@ -211,9 +215,12 @@ def invite(resume_id: str, request: Request, body: dict = Body(default_factory=d
             resumes.save_row(resume)
             try:
                 get_store().delete("interview_questions", {"resume_id": rid})
+                question_queue.reset(rid)
             except Exception as err:
                 log.error("Failed to delete existing interview questions on config update: %s", err)
         sessions.create_candidate_session(email, rid)
+        if not question_queue.existing_questions(rid):
+            question_queue.enqueue(rid)
         kind = (config or {}).get("interviewType") or "technical"
         label = {"both": "combined technical and non-technical", "non-technical": "non-technical"}.get(kind, "technical")
         full_name = (resume.get("parsed") or {}).get("personal", {}).get("fullName") or "Candidate"

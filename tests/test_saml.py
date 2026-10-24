@@ -71,6 +71,7 @@ def build_response(audience=ISSUER, email="Jane.Doe@Corp.com", offset_minutes=0,
 @pytest.fixture(autouse=True)
 def clear_replay():
     saml.reset_replay_cache()
+    saml.reset_metadata_cache()
 
 
 def test_valid_signed_assertion_yields_profile():
@@ -78,6 +79,14 @@ def test_valid_signed_assertion_yields_profile():
     assert profile["nameID"] == "Jane.Doe@Corp.com"
     assert saml.profile_emails(profile, cfg()) == ["jane.doe@corp.com"]
     assert saml.profile_local_part(profile, cfg()) == "jane.doe"
+
+
+def test_certificate_rotation_uses_any_configured_signing_certificate():
+    rotated_cfg = cfg(idp_certs=["invalid-certificate", CERT_BODY])
+
+    profile = saml.validate_post_response(build_response(), rotated_cfg)
+
+    assert profile["nameID"] == "Jane.Doe@Corp.com"
 
 
 def test_unsigned_assertion_rejected():
@@ -128,6 +137,80 @@ def test_authorize_url_and_metadata():
     assert ISSUER in meta and CALLBACK in meta and 'WantAssertionsSigned="true"' in meta
 
 
+def test_parse_metadata_signing_certs_ignores_encryption_keys():
+    xml = f"""<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
+        xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+      <md:IDPSSODescriptor>
+        <md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data>
+          <ds:X509Certificate>{CERT_BODY}</ds:X509Certificate>
+        </ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+        <md:KeyDescriptor use="encryption"><ds:KeyInfo><ds:X509Data>
+          <ds:X509Certificate>encryption-cert</ds:X509Certificate>
+        </ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+      </md:IDPSSODescriptor>
+    </md:EntityDescriptor>"""
+
+    assert saml.parse_metadata_certs(xml.encode()) == [CERT_BODY]
+
+
+def test_metadata_certs_fetch_from_microsoft_url(monkeypatch):
+    import httpx
+
+    xml = f"""<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
+        xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+      <md:IDPSSODescriptor><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data>
+        <ds:X509Certificate>{CERT_BODY}</ds:X509Certificate>
+      </ds:X509Data></ds:KeyInfo></md:KeyDescriptor></md:IDPSSODescriptor>
+    </md:EntityDescriptor>""".encode()
+
+    class Response:
+        content = xml
+
+        def raise_for_status(self):
+            pass
+
+    saml.reset_metadata_cache()
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: Response())
+    certs, error = saml.metadata_certs("https://login.microsoftonline.com/tenant/federationmetadata.xml")
+
+    assert certs == [CERT_BODY]
+    assert error == ""
+
+
+def test_metadata_configuration_enables_sso_without_static_certificate(monkeypatch):
+    monkeypatch.setenv("MICROSOFT_TENANT_ID", "12345678-1234-1234-1234-123456789012")
+    monkeypatch.setenv("SAML_ISSUER", ISSUER)
+    monkeypatch.setenv("SAML_IDP_CERT", "")
+    monkeypatch.setenv("SAML_IDP_METADATA_URL", "https://login.microsoftonline.com/tenant/metadata")
+    monkeypatch.setenv("SAML_ENABLED", "1")
+    monkeypatch.setenv("SAML_ADMIN_SSO", "1")
+    monkeypatch.setattr(saml, "metadata_certs", lambda _url: ([CERT_BODY], ""))
+
+    config = saml.get_config()
+
+    assert config["configured"] is True
+    assert config["enabled"] is True
+    assert config["idp_cert"] == CERT_BODY
+    assert config["admin_sso"] is True
+
+    monkeypatch.setenv("SAML_ENABLED", "0")
+    assert saml.get_config()["enabled"] is False
+
+
+def test_saml_status_reports_enabled_when_metadata_is_configured(client, monkeypatch):
+    monkeypatch.setenv("MICROSOFT_TENANT_ID", "12345678-1234-1234-1234-123456789012")
+    monkeypatch.setenv("SAML_ISSUER", ISSUER)
+    monkeypatch.setenv("SAML_IDP_CERT", "")
+    monkeypatch.setenv("SAML_IDP_METADATA_URL", "https://login.microsoftonline.com/tenant/metadata")
+    monkeypatch.setenv("SAML_ENABLED", "1")
+    monkeypatch.setattr(saml, "metadata_certs", lambda _url: ([CERT_BODY], ""))
+
+    response = client.get("/api/employee/auth/saml/status")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+
+
 def test_acs_end_to_end(client, store, monkeypatch):
     monkeypatch.setenv("SAML_ISSUER", ISSUER)
     monkeypatch.setenv("SAML_IDP_CERT", CERT_BODY)
@@ -143,6 +226,8 @@ def test_acs_end_to_end(client, store, monkeypatch):
     assert "sso_error" in unknown.headers["location"]
 
 
-def test_start_not_configured_redirects_with_message(client):
+def test_start_not_configured_redirects_with_message(client, monkeypatch):
+    for key in ("MICROSOFT_TENANT_ID", "SAML_ISSUER", "SAML_IDP_CERT", "SAML_IDP_METADATA_URL", "SAML_ENTRY_POINT"):
+        monkeypatch.delenv(key, raising=False)
     res = client.get("/api/employee/auth/saml", follow_redirects=False)
     assert "sso_error" in res.headers["location"] and "SAML_ISSUER" in res.headers["location"].replace("%20", " ")

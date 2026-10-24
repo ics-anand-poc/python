@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from core.db import get_store
 
@@ -19,7 +20,7 @@ def _map(row: dict) -> dict:
     }
 
 
-def add_log(actor_email: str, action: str, target: str, details: str, ip_address: str) -> dict:
+def add_log(actor_email: str, action: str, target: str, details: str, ip_address: str = "") -> dict:
     record = {
         "id": str(uuid.uuid4()),
         "actor_email": (actor_email or "").lower().strip(),
@@ -36,13 +37,53 @@ def add_log(actor_email: str, action: str, target: str, details: str, ip_address
     return _map(record)
 
 
-def get_logs() -> list[dict]:
+def get_logs(limit: Optional[int] = None) -> list[dict]:
     try:
-        rows = get_store().select("audit_logs", order="created_at desc")
+        rows = get_store().select("audit_logs", order="created_at desc", limit=limit)
     except Exception as err:
         log.warning("Failed to fetch audit logs: %s", err)
         return []
     return [_map(r) for r in rows]
+
+
+ADMIN_LOGIN_ACTIONS = ("ADMIN_LOGIN_SUCCESS", "ADMIN_SAML_SSO_SUCCESS")
+
+
+def recent_admin_logins(limit: int = 25) -> list[dict]:
+    """Latest successful admin console sign-ins (password + Microsoft SSO)."""
+    limit = max(1, min(int(limit or 25), 100))
+    try:
+        rows = get_store().select(
+            "audit_logs",
+            where={"action": list(ADMIN_LOGIN_ACTIONS)},
+            order="created_at desc",
+            limit=limit,
+        )
+    except Exception as err:
+        log.warning("Failed to fetch admin login audit: %s", err)
+        # Fallback: scan recent rows if the store rejects `in` filters.
+        rows = []
+        try:
+            for row in get_store().select("audit_logs", order="created_at desc", limit=max(limit * 20, 200)):
+                if row.get("action") in ADMIN_LOGIN_ACTIONS:
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        break
+        except Exception as err2:
+            log.warning("Admin login audit fallback failed: %s", err2)
+            return []
+    out = []
+    for row in rows:
+        mapped = _map(row)
+        method = "microsoft" if mapped.get("action") == "ADMIN_SAML_SSO_SUCCESS" else "password"
+        out.append({
+            "email": mapped.get("actorEmail") or "",
+            "method": method,
+            "ipAddress": mapped.get("ipAddress") or "",
+            "at": mapped.get("createdAt"),
+            "details": mapped.get("details") or "",
+        })
+    return out
 
 
 def clear_logs() -> None:

@@ -11,12 +11,12 @@ import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import env, env_int, frontend_origins
+from core.config import env, env_int, frontend_origins, mssql_settings
 from core.errors import install_error_handlers
 from core.security import install_traffic_controls
 from core.tokens import require_secret_in_production
 from routers import ROUTERS
-from services import storage
+from services import admin_accounts, employee_tests, monitor, question_queue, saml, storage
 
 log = logging.getLogger("talentscope")
 RETENTION_INTERVAL_S = 6 * 3600
@@ -37,12 +37,29 @@ def run_retention() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = env_int("API_THREADS", 24)
+    try:
+        if admin_accounts.ensure_console_password():
+            log.info("admin console password ready")
+        else:
+            log.warning("admin console password not setup (set ADMIN_PASSWORD)")
+    except Exception as err:
+        log.warning("admin console password bootstrap failed: %s", err)
     threading.Thread(target=run_retention, daemon=True, name="retention").start()
+    question_queue.start_workers()
+    monitor.start_db_sampler()
+    threading.Thread(target=saml.get_config, daemon=True, name="saml-metadata").start()
+    employee_tests.start_expiry_sweeper()
     yield
+    question_queue.stop_workers()
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 require_secret_in_production()
+if env("DB_PROVIDER").lower() == "supabase":
+    log.info("database: supabase %s", env("NEXT_PUBLIC_SUPABASE_URL"))
+else:
+    _db = mssql_settings()
+    log.info("database: %s %s:%s/%s", _db["target"], _db["server"], _db["port"], _db["database"])
 
 docs_enabled = env("ENABLE_API_DOCS") == "1"
 app = FastAPI(title="TalentScope API", version="1.0.0", lifespan=lifespan,

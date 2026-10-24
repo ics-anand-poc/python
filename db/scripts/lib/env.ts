@@ -1,8 +1,21 @@
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 
-/** Load the shared .env.local from the project root (parent of DB/) without overriding real env vars. */
-export function loadProjectEnv(root = resolve(process.cwd(), "..")): void {
+/** Resolve the repo root that holds .env.local (python/db -> ../..). */
+function projectRoot(): string {
+  const candidates = [
+    resolve(process.cwd(), "../.."),
+    resolve(process.cwd(), ".."),
+    process.cwd(),
+  ];
+  for (const root of candidates) {
+    if (existsSync(join(root, ".env.local")) || existsSync(join(root, ".env"))) return root;
+  }
+  return candidates[0];
+}
+
+/** Load the shared .env.local from the project root without overriding real env vars. */
+export function loadProjectEnv(root = projectRoot()): void {
   for (const name of [".env.local", ".env"]) {
     const filePath = join(root, name);
     if (!existsSync(filePath)) continue;
