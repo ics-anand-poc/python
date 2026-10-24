@@ -1,6 +1,12 @@
 # TalentScope Python API
 
-FastAPI backend with SQL Server and Supabase PostgreSQL runtime targets, plus schema migration and seed-data tooling. This folder is a standalone repository root for deployment to Render.
+FastAPI backend with SQL Server and Supabase PostgreSQL runtime targets, plus schema migration and seed-data tooling. This folder is a standalone repository root for Render or Azure VM production deployment.
+
+## Azure production deployment
+
+The `Python API - Deploy to Azure Production` GitHub Actions workflow is manual-only. Run it from the `main` branch and confirm the production input; pushes do not deploy. Validation runs before deployment, which uses the `self-hosted`, `linux`, and `icsbetintapp01` runner labels.
+
+The runner syncs this repository to `/opt/talentscope/talentscope-UI/python` and updates the existing `python` Compose service using `/opt/talentscope/talentscope-UI/docker-compose.azure.yml`. Production settings remain on the VM in `/opt/talentscope/talentscope-UI/.env.azure`; do not add them to GitHub or this repository.
 
 ## Deploy on Render
 
