@@ -430,6 +430,21 @@ def _check_issuer(element: etree._Element, expected: str) -> None:
         raise SamlError("SAML issuer mismatch")
 
 
+def _accepted_audiences(cfg: dict) -> set[str]:
+    """Azure Entra may emit the bare app id, spn:/api: forms, or the app URL as Audience."""
+    issuer = (cfg.get("issuer") or "").strip()
+    app = (cfg.get("app_url") or "").rstrip("/")
+    callback = (cfg.get("callback_url") or "").rstrip("/")
+    accepted = {value for value in (issuer, app, callback) if value}
+    if issuer:
+        accepted.update({f"spn:{issuer}", f"api://{issuer}"})
+    for extra in env("SAML_AUDIENCE").split(","):
+        extra = extra.strip()
+        if extra:
+            accepted.add(extra.rstrip("/"))
+    return accepted
+
+
 def _attributes(assertion: etree._Element) -> dict:
     attrs: dict = {}
     for attr in assertion.findall("saml:AttributeStatement/saml:Attribute", NS):
@@ -508,8 +523,11 @@ def validate_post_response(saml_response_b64: str, cfg: Optional[dict] = None, n
         raise SamlError("SAML assertion has no conditions")
     _check_window(conditions.get("NotBefore"), conditions.get("NotOnOrAfter"), now)
     audiences = [_text(a) for a in conditions.findall("saml:AudienceRestriction/saml:Audience", NS)]
-    if not audiences or cfg["issuer"] not in audiences:
-        raise SamlError("SAML audience mismatch")
+    expected = _accepted_audiences(cfg)
+    if not audiences or not any(a in expected for a in audiences):
+        raise SamlError(
+            f"SAML audience mismatch (got {audiences!r}, accepted {sorted(expected)!r})"
+        )
     _check_subject(assertion, cfg, expected_request_id, now)
     for statement in assertion.findall("saml:AuthnStatement", NS):
         ends = _parse_time(statement.get("SessionNotOnOrAfter"))
