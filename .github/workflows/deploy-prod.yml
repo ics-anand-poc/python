@@ -42,4 +42,4 @@ jobs:
         with:
           ref: refs/heads/main
       - name: Build, deploy, and verify API
-        run: bash .github/scripts/deploy-production.sh
+        run: bash .github/scripts/deploy-prod.sh
