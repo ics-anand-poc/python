@@ -65,16 +65,22 @@ def login(request: Request, body: dict = Body(default_factory=dict)):
         has_pw = accounts.has_password(employee)
         hash_valid = has_pw and accounts.verify_password(password, employee.get("password_salt") or "", employee.get("password_hash") or "")
         first_login = employee["is_first_login"] if employee.get("is_first_login") is not None else not has_pw
-        allowed_first = first_login and (password == "" or password.upper() == employee["employee_id"].strip().upper() or hash_valid)
         actor = employee["email"] or employee["employee_id"]
-        if not hash_valid and not allowed_first:
+        # Never allow blank password or password == employee ID (even on first login).
+        if not password or password.upper() == employee["employee_id"].strip().upper():
+            audit.add_log(actor, "EMPLOYEE_LOGIN_FAILURE", "Employee Portal", "Blank or employee-ID password rejected", ip)
+            return json_error(401, "Invalid credentials")
+        if not hash_valid:
+            if first_login and not has_pw:
+                audit.add_log(actor, "EMPLOYEE_LOGIN_FAILURE", "Employee Portal", "First login requires SSO or a set password", ip)
+                return json_error(401, "Sign in with Microsoft, or ask HR to set your initial password.")
             audit.add_log(actor, "EMPLOYEE_LOGIN_FAILURE", "Employee Portal", "Invalid password provided", ip)
             return json_error(401, "Invalid credentials")
         token = sign_token(employee["employee_id"])
         accounts.sync_account(employee)
         if first_login:
             audit.add_log(actor, "EMPLOYEE_LOGIN_FIRST_TIME_SUCCESS", "Employee Portal",
-                          "First time login with initial or blank password. Prompting to keep or change password.", ip)
+                          "First time login. Prompting to keep or change password.", ip)
             return {"status": "first_time_modal", "token": token, "employee": _employee_payload(employee)}
         audit.add_log(actor, "EMPLOYEE_LOGIN_SUCCESS", "Employee Portal", "Employee logged in and synced successfully", ip)
         return {"status": "ok", "token": token, "employee": _employee_payload(employee)}
@@ -106,12 +112,21 @@ def set_password(request: Request, body: dict = Body(default_factory=dict)):
     if ip_limit.limited:
         return rate_limited_response(ip_limit, "Too many attempts. Please try again later.")
     try:
-        employee_id = as_employee_id(body.get("employee_id"))
+        # Must already hold a first-login session token (from password login or SSO).
+        session = None
+        try:
+            from core.auth import require_employee
+            session = require_employee(request)
+        except Exception:
+            return json_error(401, "Sign in first, then set your password.")
+        employee_id = as_employee_id(body.get("employee_id")) or session["employee_id"]
+        if employee_id.upper() != session["employee_id"].upper():
+            return json_error(403, "Token does not match this employee.")
         password = as_password(body.get("password"))
-        if not employee_id:
-            return json_error(400, "Employee ID is required")
         if not password or not _strong(password):
             return json_error(400, "Password does not meet the strength requirements")
+        if password.upper() == session["employee_id"].strip().upper():
+            return json_error(400, "Password cannot be the same as your Employee ID.")
         account_limit = is_rate_limited_any([f"auth:acct:{employee_id.upper()}"], 5, 60_000)
         if account_limit.limited:
             return rate_limited_response(account_limit, "Too many attempts. Please try again later.")
@@ -330,17 +345,33 @@ def saml_start(request: Request):
 
 def _admin_identity(emails: list[str]) -> Optional[str]:
     for email in emails:
-        if email.endswith("@infinite.com") and (admin_accounts.is_super_admin(email) or admin_accounts.get_named_record(email)):
-            return email
+        if not email.endswith("@infinite.com"):
+            continue
+        if (
+            admin_accounts.is_super_admin(email)
+            or admin_accounts.get_named_record(email)
+            or admin_accounts.is_screening_only(email)
+            or admin_accounts.find_named_by_alias(email)
+        ):
+            # Prefer the canonical named-account email when matched via alias.
+            named = admin_accounts.get_named_record(email) or admin_accounts.find_named_by_alias(email)
+            return (named and named.get("_email")) or email
     return None
 
 
 def _finish_admin(cfg: dict, profile: dict, emails: list[str], ip: str):
     email = _admin_identity(emails)
     if not email:
+        tried = ", ".join(emails) if emails else str(profile.get("nameID") or "unknown")
         audit.add_log(emails[0] if emails else str(profile.get("nameID") or "unknown"), "ADMIN_SAML_SSO_FAILURE", "Admin Console",
-                      "SAML identity has no admin access.", ip)
-        return _sso_error(cfg["app_url"], "This Microsoft account does not have admin access.", 303, "admin")
+                      f"SAML identity has no admin access ({tried}).", ip)
+        return _sso_error(
+            cfg["app_url"],
+            f"Microsoft signed you in as {tried}, but that email is not in Admin Panel Access. "
+            "Add that exact Entra UPN under Portal Config (or as an alias on an existing admin) and try again.",
+            303,
+            "admin",
+        )
     audit.add_log(email, "ADMIN_SAML_SSO_SUCCESS", "Admin Console", "SAML SSO login to the admin console.", ip)
     response = RedirectResponse(f"{cfg['app_url']}/admin/sso-complete", status_code=303)
     response.set_cookie(ADMIN_HANDOFF_COOKIE, sign_token("admin", 60 * 60 * 1000, email=email), max_age=120, httponly=True,

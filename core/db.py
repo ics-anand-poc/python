@@ -404,19 +404,16 @@ class MssqlStore(Store):
         keys = [key] if isinstance(key, str) else list(key)
         json_cols = JSON_COLUMNS.get(table, set())
         data = dict(row)
-        updatable = [c for c in data if c not in keys]
-        where_sql = " AND ".join(f"{ident(k)} = ?" for k in keys)
-        key_params = [encode_value(k, data[k], set()) for k in keys]
-        if updatable:
-            set_sql = ", ".join(f"{ident(c)} = ?" for c in updatable)
-            update_params = [encode_value(c, data[c], json_cols) for c in updatable]
-            updated = self._run(f"UPDATE [dbo].{ident(table)} SET {set_sql} WHERE {where_sql}",
-                                tuple(update_params + key_params), False)
+        key_filter = {k: data[k] for k in keys}
+        # Prefer existence check: pyodbc rowcount is often -1 after UPDATE, which used to
+        # trigger a duplicate INSERT and PK violations (e.g. portal_settings).
+        if self.first(table, key_filter):
+            updatable = {c: data[c] for c in data if c not in keys}
+            if updatable:
+                self.update(table, updatable, key_filter)
         else:
-            updated = 1 if self.count(table, {k: data[k] for k in keys}) else 0
-        if not updated or int(updated) <= 0:
             self._insert_one(table, data)
-        return self.first(table, {k: data[k] for k in keys}) or decode_row(table, data)
+        return self.first(table, key_filter) or decode_row(table, data)
 
 
 class SupabaseStore(Store):

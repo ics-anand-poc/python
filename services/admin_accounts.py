@@ -23,6 +23,7 @@ PERMISSIONS = (
     ("adminControls", "Admin Controls (ingestion, uploads, match scores, reset candidate)"),
     ("systemLogs", "System Logs viewer"),
     ("systemMonitor", "System Monitor"),
+    ("portalConfig", "Portal Config (feature toggles & manage who has admin access)"),
     ("changePassword", "Change their own password"),
 )
 PERMISSION_KEYS = tuple(key for key, _ in PERMISSIONS)
@@ -55,6 +56,22 @@ def set_console_password(password: str) -> None:
     hashed, salt = hash_password(password)
     settings.set_setting(CONSOLE_PASSWORD_KEY, {"hash": hashed, "salt": salt})
     invalidate_cache()
+
+
+def ensure_console_password() -> Optional[dict]:
+    """Seed the hashed console password from ADMIN_PASSWORD when the DB has none yet."""
+    stored = console_secret()
+    if stored:
+        return stored
+    bootstrap = env("ADMIN_PASSWORD")
+    if not bootstrap:
+        return None
+    try:
+        set_console_password(bootstrap)
+    except Exception as err:
+        log.warning("Failed to seed admin console password from ADMIN_PASSWORD: %s", err)
+        return None
+    return console_secret()
 
 
 def _screening_password() -> str:
@@ -94,6 +111,19 @@ def _matches(password: str, stored: dict) -> bool:
         return False
 
 
+def _clean_aliases(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for item in raw:
+        alias = clean_email(item)
+        if not alias.endswith("@infinite.com") or alias in seen:
+            continue
+        seen.add(alias)
+        out.append(alias)
+    return out
+
+
 def _normalize(raw: dict) -> tuple[dict, bool]:
     plaintext = str((raw or {}).get("password") or "").strip()
     hashed = hash_password(plaintext) if plaintext else None
@@ -104,6 +134,7 @@ def _normalize(raw: dict) -> tuple[dict, bool]:
         "canViewEmployeePortal": raw.get("canViewEmployeePortal") is not False,
         "canChangePassword": raw.get("canChangePassword") is not False,
         "canViewOrgScreeningData": raw.get("canViewOrgScreeningData") is not False,
+        "aliases": _clean_aliases(raw.get("aliases")),
     }
     if isinstance(raw.get("permissions"), dict):
         record["permissions"] = {k: bool(v) for k, v in raw["permissions"].items() if k in PERMISSION_KEYS}
@@ -173,6 +204,18 @@ def get_named_record(email: str) -> Optional[dict]:
     return load_accounts().get(clean_email(email))
 
 
+def find_named_by_alias(email: str) -> Optional[dict]:
+    """Return named-account record matched by aliases[], with canonical `_email` set."""
+    user = clean_email(email)
+    if not user:
+        return None
+    for account_email, record in load_accounts().items():
+        aliases = record.get("aliases") if isinstance(record.get("aliases"), list) else []
+        if user == account_email or user in aliases:
+            return {**record, "_email": account_email}
+    return None
+
+
 def all_permissions(value: bool) -> dict:
     return {key: value for key in PERMISSION_KEYS}
 
@@ -186,12 +229,17 @@ def is_super_admin(email: str) -> bool:
 
 
 def _record_permissions(record: dict) -> dict:
-    out = {**all_permissions(True), "employeePortal": bool(record.get("canViewEmployeePortal", True)),
-           "changePassword": bool(record.get("canChangePassword", True)),
-           "allScreeningData": bool(record.get("canViewOrgScreeningData", True))}
-    for key, value in (record.get("permissions") or {}).items():
-        if key in PERMISSION_KEYS and isinstance(value, bool):
-            out[key] = value
+    stored = record.get("permissions") if isinstance(record.get("permissions"), dict) else {}
+    # Fail closed: start denied, then apply explicit ticks (or legacy flags when no permissions map).
+    out = all_permissions(False)
+    if stored:
+        for key, value in stored.items():
+            if key in PERMISSION_KEYS and isinstance(value, bool):
+                out[key] = value
+    else:
+        out["employeePortal"] = bool(record.get("canViewEmployeePortal", False))
+        out["changePassword"] = bool(record.get("canChangePassword", False))
+        out["allScreeningData"] = bool(record.get("canViewOrgScreeningData", False))
     return out
 
 
@@ -204,9 +252,13 @@ def get_access(email: str) -> dict:
     user = clean_email(email)
     if is_super_admin(user):
         return _access(user, True, {**all_permissions(True), "changePassword": False})
-    named = get_named_record(user)
+    named = get_named_record(user) or find_named_by_alias(user)
     if named:
-        return _access(user, False, _record_permissions(named))
+        canonical = named.get("_email") or user
+        perms = _record_permissions(named)
+        if not _secret_ok(named):
+            perms = {**perms, "changePassword": False}
+        return _access(canonical, False, perms)
     if is_screening_only(user) and env("SCREENING_ADMIN_PASSWORD"):
         return _access(user, False, {**all_permissions(True), "employeePortal": False, "changePassword": False})
     return _access(user, False, all_permissions(False))
@@ -217,12 +269,17 @@ def has_permission(email: str, permission: str) -> bool:
 
 
 def can_change_password(email: str) -> bool:
-    named = get_named_record(email)
-    return bool(named and _record_permissions(named)["changePassword"])
+    named = get_named_record(email) or find_named_by_alias(email)
+    # SSO-only accounts have no password to change from the UI.
+    return bool(named and _secret_ok(named) and _record_permissions(named)["changePassword"])
 
 
 def can_view_org_screening_data(email: str) -> bool:
     return has_permission(email, "allScreeningData")
+
+
+def can_manage_portal_config(email: str) -> bool:
+    return is_super_admin(email) or has_permission(email, "portalConfig")
 
 
 def _env_match(password: str, expected: str) -> bool:
@@ -234,7 +291,7 @@ def authenticate(email: str, password: str) -> Optional[dict]:
     if not user.endswith("@infinite.com") or not password:
         return None
     if user == super_admin_email():
-        stored = console_secret()
+        stored = ensure_console_password()
         if not stored:
             raise AdminPasswordNotSetup(ADMIN_PASSWORD_NOT_SETUP)
         return get_access(user) if _matches(password, stored) else None
@@ -247,11 +304,12 @@ def authenticate(email: str, password: str) -> Optional[dict]:
 
 
 def list_named() -> list[dict]:
-    return sorted(({"email": email, "hasPassword": _secret_ok(record), "permissions": _record_permissions(record)}
+    return sorted(({"email": email, "hasPassword": _secret_ok(record), "permissions": _record_permissions(record),
+                    "aliases": list(record.get("aliases") or [])}
                    for email, record in load_accounts().items()), key=lambda item: item["email"])
 
 
-def save_named(email: str, permissions: dict, password: Optional[str]) -> tuple[bool, str, bool]:
+def save_named(email: str, permissions: dict, password: Optional[str], aliases: Optional[list] = None) -> tuple[bool, str, bool]:
     user = clean_email(email)
     if not re.fullmatch(r"[^\s@]+@infinite\.com", user):
         return False, "Use an @infinite.com email address.", False
@@ -262,11 +320,25 @@ def save_named(email: str, permissions: dict, password: Optional[str]) -> tuple[
         return False, "The password must be at least 8 characters.", False
     accounts = dict(load_accounts())
     existing = accounts.get(user)
-    if not existing and not password:
-        return False, "Set a password for the new admin.", False
+    cleaned_aliases = _clean_aliases(aliases if aliases is not None else (existing or {}).get("aliases"))
+    cleaned_aliases = [a for a in cleaned_aliases if a != user]
+    for alias in cleaned_aliases:
+        if alias == super_admin_email() or alias in accounts:
+            return False, f"Alias {alias} is already an admin account email. Use a different alias.", False
+        for other_email, other in accounts.items():
+            if other_email == user:
+                continue
+            if alias in (other.get("aliases") or []):
+                return False, f"Alias {alias} is already linked to {other_email}.", False
+    # Password is optional: SSO-only admins need only an Admin Panel Access row.
     merged = {key: (permissions or {}).get(key) is True for key in PERMISSION_KEYS}
-    hashed, salt = hash_password(password) if password else ((existing or {}).get("hash"), (existing or {}).get("salt"))
-    accounts[user] = {"hash": hashed, "salt": salt, "permissions": merged, "canViewEmployeePortal": merged["employeePortal"],
+    if password:
+        hashed, salt = hash_password(password)
+    else:
+        hashed = (existing or {}).get("hash")
+        salt = (existing or {}).get("salt")
+    accounts[user] = {"hash": hashed, "salt": salt, "permissions": merged, "aliases": cleaned_aliases,
+                      "canViewEmployeePortal": merged["employeePortal"],
                       "canChangePassword": merged["changePassword"], "canViewOrgScreeningData": merged["allScreeningData"]}
     save_accounts(accounts)
     return True, "", existing is None
@@ -287,8 +359,10 @@ def change_password(email: str, current_password: str, new_password: str) -> tup
     named = get_named_record(user)
     if not named or not named.get("canChangePassword"):
         return False, "This account cannot change its password here."
-    if len(str(new_password or "")) < 5:
-        return False, "New password must be at least 5 characters."
+    if len(str(new_password or "")) < 8:
+        return False, "New password must be at least 8 characters."
+    if not _secret_ok(named):
+        return False, "This account signs in with Microsoft only. Ask Portal Config to set a backup password."
     if not authenticate(user, current_password):
         return False, "Current password is incorrect."
     accounts = load_accounts()

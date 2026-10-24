@@ -9,12 +9,12 @@ from services.structured_log import write_log
 router = APIRouter(prefix="/api/admin/admin-accounts", tags=["admin-access"])
 
 
-def super_admin_only(request: Request, _: str = Depends(require_admin)) -> str:
+def portal_config_manager(request: Request, _: str = Depends(require_admin)) -> str:
     email = admin_email(request)
     if not email:
         raise ApiError(403, "Please sign out and sign in again to manage admin access.")
-    if not admin_accounts.is_super_admin(email):
-        raise ApiError(403, "Only the main admin can manage admin access.")
+    if not admin_accounts.can_manage_portal_config(email):
+        raise ApiError(403, "You do not have Portal Config / Admin Panel Access permission.")
     return email
 
 
@@ -29,17 +29,21 @@ def _overview(actor: str) -> dict:
 
 
 @router.get("")
-def list_admins(actor: str = Depends(super_admin_only)):
+def list_admins(actor: str = Depends(portal_config_manager)):
     return _overview(actor)
 
 
 @router.post("")
-def save_admin(request: Request, body: dict = Body(default_factory=dict), actor: str = Depends(super_admin_only)):
+def save_admin(request: Request, body: dict = Body(default_factory=dict), actor: str = Depends(portal_config_manager)):
     try:
         email = str(body.get("email") or "").strip().lower()
         permissions = body.get("permissions") if isinstance(body.get("permissions"), dict) else {}
         password = body.get("password") if isinstance(body.get("password"), str) else None
-        ok, error, created = admin_accounts.save_named(email, permissions, password)
+        aliases = body.get("aliases") if isinstance(body.get("aliases"), list) else None
+        # Only the main admin may grant Portal Config (prevents privilege escalation).
+        if permissions.get("portalConfig") is True and not admin_accounts.is_super_admin(actor):
+            return json_error(403, "Only the main admin can grant Portal Config access.")
+        ok, error, created = admin_accounts.save_named(email, permissions, password, aliases=aliases)
         if not ok:
             return json_error(400, error)
         details = f"{_describe(permissions)}{' (password reset)' if password and not created else ''}"
@@ -51,7 +55,7 @@ def save_admin(request: Request, body: dict = Body(default_factory=dict), actor:
 
 
 @router.delete("")
-def remove_admin(request: Request, actor: str = Depends(super_admin_only)):
+def remove_admin(request: Request, actor: str = Depends(portal_config_manager)):
     email = str(request.query_params.get("email") or "").strip().lower()
     if not email:
         return json_error(400, "Email is required.")

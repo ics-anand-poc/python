@@ -4,7 +4,7 @@ from html import escape
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import acting_admin_email, require_admin
+from core.auth import acting_admin_email, require_permission
 from core.config import app_url
 from core.db import get_store
 from core.errors import json_error, public_error
@@ -15,7 +15,7 @@ from services.invite_mail import build_invite_html
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin/resumes", tags=["admin-resumes"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin/resumes", tags=["admin-resumes"], dependencies=[Depends(require_permission("candidates"))])
 
 MIME = {"pdf": "application/pdf", "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "txt": "text/plain"}
@@ -73,11 +73,12 @@ def batch_delete(request: Request, body: dict = Body(default_factory=dict)):
 
 
 @router.post("/reset_by_email")
-def reset_by_email(body: dict = Body(default_factory=dict)):
+def reset_by_email(request: Request, body: dict = Body(default_factory=dict)):
     raw = body.get("email")
     if not raw or not isinstance(raw, str):
         return json_error(400, "Email is required")
     clean = raw.lower().strip()
+    actor = acting_admin_email(request) or "unknown"
     try:
         match = next((r for r in resumes.list_resumes()
                       if str((r.get("parsed") or {}).get("personal", {}).get("email") or "").lower().strip() == clean), None)
@@ -86,7 +87,7 @@ def reset_by_email(body: dict = Body(default_factory=dict)):
             _clear_candidate(match["id"])
         if not session and not match:
             return json_error(404, f"No registered candidate session or CV record found for {clean}.")
-        reset_logs.add_log(clean, body.get("adminEmail") or "unknown@infinite.com", "Reset Form")
+        reset_logs.add_log(clean, actor, "Reset Form")
         write_log("candidate-processing", "RESET_CANDIDATE_BY_EMAIL", "success", f"Successfully reset candidate session and attempts for email {clean}")
         return {"success": True, "message": f"Session for {clean} has been reset successfully."}
     except Exception as err:
@@ -123,7 +124,8 @@ def delete_resume(resume_id: str, request: Request):
         return json_error(400, "Invalid resume id")
     try:
         resumes.delete_resume(rid)
-        audit.add_log("admin@infinite.com", "ADMIN_DELETE_RESUME", rid, f"Successfully deleted candidate resume ID: {rid}", get_client_ip(request))
+        actor = acting_admin_email(request) or "unknown"
+        audit.add_log(actor, "ADMIN_DELETE_RESUME", rid, f"Successfully deleted candidate resume ID: {rid}", get_client_ip(request))
         write_log("candidate-processing", "DELETE_CANDIDATE", "success", f"Successfully deleted candidate CV ID: {rid}")
         return {"success": True}
     except Exception as err:
@@ -185,12 +187,12 @@ def reset(resume_id: str, request: Request, body: dict = Body(default_factory=di
     if not email:
         return json_error(400, "Candidate email address not found in resume parsed structure")
     try:
-        admin_email = body.get("adminEmail") or "unknown@infinite.com"
+        actor = acting_admin_email(request) or "unknown"
         sessions.reset_session_by_email(email, rid)
         _clear_candidate(rid)
-        audit.add_log(admin_email, "ADMIN_RESET_RESUME", email, f"Cleared proctoring, questions, and attempts for candidate {email}", get_client_ip(request))
+        audit.add_log(actor, "ADMIN_RESET_RESUME", email, f"Cleared proctoring, questions, and attempts for candidate {email}", get_client_ip(request))
         write_log("candidate-processing", "RESET_CANDIDATE", "success", f"Cleared proctoring, questions, and attempts for candidate {email}")
-        reset_logs.add_log(email, admin_email, "Candidate Card")
+        reset_logs.add_log(email, actor, "Candidate Card")
         return {"success": True}
     except Exception as err:
         write_log("candidate-processing", "RESET_CANDIDATE_FAILED", "failed", str(err))

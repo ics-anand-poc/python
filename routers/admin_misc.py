@@ -28,13 +28,16 @@ def portal_settings():
 
 @router.post("/portal_settings")
 def update_portal_settings(request: Request, body: dict = Body(default_factory=dict)):
+    actor = acting_admin_email(request) or ""
+    if not actor or not admin_accounts.can_manage_portal_config(actor):
+        return json_error(403, "You do not have Portal Config permission.")
     new_settings = body.get("settings")
     if not isinstance(new_settings, dict):
         return json_error(400, "Invalid settings object")
     try:
         updated = settings.update_portal_features(new_settings)
         details = f"Updated portal settings: SystemLogsViewer={updated['showSystemLogsViewer']}"
-        audit.add_log(body.get("adminEmail") or "admin@infinite.com", "ADMIN_UPDATE_PORTAL_SETTINGS", "portal-settings", details, get_client_ip(request))
+        audit.add_log(actor or "admin@infinite.com", "ADMIN_UPDATE_PORTAL_SETTINGS", "portal-settings", details, get_client_ip(request))
         write_log("employee", "UPDATE_PORTAL_SETTINGS", "success", details)
         return {"success": True, "settings": updated}
     except Exception as err:
@@ -49,10 +52,11 @@ def interview_defaults():
 
 @router.post("/interview_defaults")
 def update_interview_defaults(request: Request, body: dict = Body(default_factory=dict)):
+    actor = acting_admin_email(request) or "unknown"
     try:
         updated = settings.update_interview_defaults(body)
         details = f"Default interview duration set to {updated['durationMinutes']} minutes"
-        audit.add_log(body.get("adminEmail") or "admin@infinite.com", "ADMIN_UPDATE_INTERVIEW_DEFAULTS", "interview-defaults",
+        audit.add_log(actor, "ADMIN_UPDATE_INTERVIEW_DEFAULTS", "interview-defaults",
                       details, get_client_ip(request))
         write_log("audit", "UPDATE_INTERVIEW_DEFAULTS", "success", details)
         return {"success": True, **updated}
@@ -105,10 +109,14 @@ def get_logs(request: Request):
 
 
 @router.delete("/logs", dependencies=[Depends(require_permission("systemLogs"))])
-def clear_logs():
+def clear_logs(request: Request):
+    actor = acting_admin_email(request) or "unknown"
+    if not admin_accounts.can_manage_portal_config(actor):
+        return json_error(403, "Only Portal Config admins can clear system logs.")
     structured_log.clear_all()
     audit.clear_logs()
-    write_log("audit", "CLEAR_SYSTEM_LOGS", "success", "Cleared system and audit logs")
+    write_log("audit", "CLEAR_SYSTEM_LOGS", "success", f"Cleared system and audit logs by {actor}")
+    audit.add_log(actor, "CLEAR_SYSTEM_LOGS", "System Logs", "Cleared system and audit logs", get_client_ip(request))
     return {"success": True}
 
 

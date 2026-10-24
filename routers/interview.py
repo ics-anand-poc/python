@@ -7,9 +7,11 @@ import anyio
 from fastapi import APIRouter, Body, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+from core.auth import bearer_token, is_admin_request
 from core.db import get_store
-from core.errors import json_error, public_error
+from core.errors import ApiError, json_error, public_error
 from core.security import get_client_ip, inspect_upload, is_rate_limited_any, rate_limited_response
+from core.tokens import sign_interview_token, verify_interview_token
 from core.validation import as_email, as_uuid
 from services.structured_log import write_log
 from services import ai, audit, identity, interviews, llm, question_queue, resumes, sessions, storage
@@ -28,6 +30,23 @@ def _now() -> str:
 
 def _bad_id() -> JSONResponse:
     return json_error(400, "Invalid interview id", status="error")
+
+
+def _auth_error(err: ApiError, **extra) -> JSONResponse:
+    return json_error(getattr(err, "status", 401), getattr(err, "message", None) or "Unauthorized", **extra)
+
+
+def _require_interview_access(request: Request, interview_id: str) -> str:
+    """Interview session token (candidate) or admin bearer (review)."""
+    resume_id = as_uuid(interview_id)
+    if not resume_id:
+        raise ApiError(400, "Invalid interview id")
+    token = bearer_token(request)
+    if verify_interview_token(token, resume_id):
+        return resume_id
+    if is_admin_request(request):
+        return resume_id
+    raise ApiError(401, "Interview session required")
 
 
 @router.post("/access")
@@ -50,17 +69,19 @@ def access(request: Request, body: dict = Body(default_factory=dict)):
             return JSONResponse({"success": False, "message": "You have already completed this interview. Duplicate participation or re-entry is not permitted."}, status_code=403)
         if session["resumeId"] and not resumes.get_resume(session["resumeId"]):
             return JSONResponse({"success": False, "message": "Associated resume record was not found. Please contact HR."}, status_code=404)
-        return {"success": True, "resumeId": session["resumeId"]}
+        resume_id = session["resumeId"]
+        return {"success": True, "resumeId": resume_id, "interviewToken": sign_interview_token(resume_id)}
     except Exception as err:
         log.error("interview/access: %s", err)
         return JSONResponse({"success": False, "message": "Verification failed"}, status_code=500)
 
 
 @router.get("/{interview_id}/questions")
-async def questions(interview_id: str):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return json_error(400, "Resume ID is required and must be valid")
+async def questions(interview_id: str, request: Request):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     try:
         if not await anyio.to_thread.run_sync(resumes.get_resume, resume_id):
             return json_error(404, "Resume not found")
@@ -76,10 +97,11 @@ async def questions(interview_id: str):
 
 
 @router.get("/{interview_id}/answers")
-def answers(interview_id: str):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return _bad_id()
+def answers(interview_id: str, request: Request):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     try:
         rows = get_store().select("interview_attempts", {"resume_id": resume_id}, ["question_index", "candidate_answer"])
         return [{"question_index": r["question_index"], "answer": r["candidate_answer"]} for r in rows]
@@ -88,10 +110,11 @@ def answers(interview_id: str):
 
 
 @router.get("/{interview_id}/timing")
-def timing(interview_id: str):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return json_error(400, "Interview ID is required", status="error")
+def timing(interview_id: str, request: Request):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err, status="error")
     try:
         return interviews.timing(resume_id)
     except Exception as err:
@@ -99,10 +122,11 @@ def timing(interview_id: str):
 
 
 @router.post("/{interview_id}/start")
-def start(interview_id: str):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return json_error(400, "Interview ID is required", status="error")
+def start(interview_id: str, request: Request):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err, status="error")
     try:
         data = interviews.mark_started(resume_id)
         write_log("candidate-processing", "INTERVIEW_STARTED", "success", f"Interview {resume_id} started")
@@ -112,10 +136,11 @@ def start(interview_id: str):
 
 
 @router.post("/{interview_id}/submit_answer")
-def submit_answer(interview_id: str, body: dict = Body(default_factory=dict)):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return _bad_id()
+def submit_answer(interview_id: str, request: Request, body: dict = Body(default_factory=dict)):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err, status="error")
     try:
         try:
             index = int(body.get("question_index"))
@@ -138,8 +163,11 @@ def submit_answer(interview_id: str, body: dict = Body(default_factory=dict)):
 
 
 @router.post("/{interview_id}/conclude")
-def conclude(interview_id: str):
-    resume_id = as_uuid(interview_id)
+def conclude(interview_id: str, request: Request):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     resume = resumes.get_resume(resume_id, True) if resume_id else None
     if not resume:
         return json_error(404, "Resume record not found")
@@ -154,8 +182,11 @@ def conclude(interview_id: str):
 
 
 @router.post("/{interview_id}/proctor_violation")
-def proctor_violation(interview_id: str, body: dict = Body(default_factory=dict)):
-    resume_id = as_uuid(interview_id)
+def proctor_violation(interview_id: str, request: Request, body: dict = Body(default_factory=dict)):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     violation_type, warning_count = body.get("violationType"), body.get("warningCount")
     if not violation_type or not isinstance(warning_count, (int, float)) or isinstance(warning_count, bool):
         return json_error(400, "Missing required fields: violationType, warningCount")
@@ -190,7 +221,11 @@ def proctor_violation(interview_id: str, body: dict = Body(default_factory=dict)
 
 
 @router.post("/{interview_id}/run_code")
-def run_code(interview_id: str, body: dict = Body(default_factory=dict)):
+def run_code(interview_id: str, request: Request, body: dict = Body(default_factory=dict)):
+    try:
+        _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     question, language, code = body.get("question"), body.get("language"), body.get("code")
     if not question or not language or not code:
         return json_error(400, "Missing required fields: question, language, code")
@@ -236,7 +271,10 @@ def _decode_image(value: str) -> tuple[str, bytes]:
 @router.post("/{interview_id}/verify_id")
 def verify_id(interview_id: str, request: Request, body: dict = Body(default_factory=dict)):
     ip = get_client_ip(request)
-    resume_id = as_uuid(interview_id)
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     resume = resumes.get_resume(resume_id, True) if resume_id else None
     if not resume:
         return json_error(404, "Resume record not found")
@@ -291,10 +329,11 @@ def verify_id(interview_id: str, request: Request, body: dict = Body(default_fac
         return public_error(err, "Verification processing failed")
 
 
-def _verification_image(interview_id: str, kind: str):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return json_error(400, "Invalid verification type")
+def _verification_image(request: Request, interview_id: str, kind: str):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     for ext, mime in (("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")):
         data = storage.read("verifications", f"{resume_id}_{kind}.{ext}")
         if data is not None:
@@ -303,20 +342,21 @@ def _verification_image(interview_id: str, kind: str):
 
 
 @router.get("/{interview_id}/verification/id")
-def verification_id_image(interview_id: str):
-    return _verification_image(interview_id, "id")
+def verification_id_image(interview_id: str, request: Request):
+    return _verification_image(request, interview_id, "id")
 
 
 @router.get("/{interview_id}/verification/selfie")
-def verification_selfie_image(interview_id: str):
-    return _verification_image(interview_id, "selfie")
+def verification_selfie_image(interview_id: str, request: Request):
+    return _verification_image(request, interview_id, "selfie")
 
 
 @router.post("/{interview_id}/upload_video")
-def upload_video(interview_id: str, video: UploadFile = File(None), duration: str = Form(None)):
-    resume_id = as_uuid(interview_id)
-    if not resume_id:
-        return json_error(400, "Invalid interview id")
+def upload_video(interview_id: str, request: Request, video: UploadFile = File(None), duration: str = Form(None)):
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     if video is None:
         return json_error(400, "No video file provided")
     try:
@@ -340,7 +380,10 @@ def upload_video(interview_id: str, video: UploadFile = File(None), duration: st
 
 @router.get("/{interview_id}/video")
 def video(interview_id: str, request: Request):
-    resume_id = as_uuid(interview_id)
+    try:
+        resume_id = _require_interview_access(request, interview_id)
+    except ApiError as err:
+        return _auth_error(err)
     path = storage.resolve("recordings", f"{resume_id}.webm") if resume_id else None
     if path is None:
         return json_error(404, "Video file not found")

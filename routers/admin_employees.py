@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 
-from core.auth import acting_admin_email, require_admin, require_permission
+from core.auth import acting_admin_email, require_any_permission, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from services import admin_accounts, corp_pool, docs_storage, portal_roster as pr, test_video
@@ -15,7 +15,11 @@ from services.products import format_topic_title_for_display
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin/employees", tags=["admin-employees"], dependencies=[Depends(require_admin)])
+router = APIRouter(
+    prefix="/api/admin/employees",
+    tags=["admin-employees"],
+    dependencies=[Depends(require_any_permission("corpPool", "employeePortal"))],
+)
 
 TEST_COLUMNS = ["id", "employee_id", "employee_code", "status", "topic_id", "subject_id", "difficulty", "total_questions", "score_correct",
                 "score_total", "score_percent", "session_recording_url", "proctoring", "started_at", "completed_at", "topic_title", "subject_title"]
@@ -356,7 +360,7 @@ def dispatch_mail(request: Request, body: dict = Body(default_factory=dict)):
 
     ip = get_client_ip(request)
     try:
-        requester = body.get("adminEmail") or "admin@infinite.com"
+        requester = acting_admin_email(request) or "unknown"
         portal_mode = body.get("portal") is True
         origin = app_url()
         portal_url = f"{origin}/employee?org=BizX" if portal_mode else origin

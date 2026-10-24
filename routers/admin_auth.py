@@ -82,12 +82,12 @@ def change_password(request: Request, body: dict = Body(default_factory=dict), _
     if limit.limited:
         return rate_limited_response(limit, "Too many attempts. Please try again later.")
     try:
-        email = admin_email(request) or as_email(body.get("email")) or ""
+        email = admin_email(request) or ""
         current = as_password(body.get("currentPassword") if isinstance(body.get("currentPassword"), str) else "", True)
         new = as_password(body.get("newPassword") if isinstance(body.get("newPassword"), str) else "", True)
         if current is None or new is None:
             return json_error(400, "Invalid request")
-        if not admin_accounts.can_change_password(email):
+        if not email or not admin_accounts.can_change_password(email):
             audit.add_log(email or "unknown", "ADMIN_PASSWORD_CHANGE_DENIED", "Admin Console",
                           "Account is not allowed to change password", ip)
             return json_error(403, "This account cannot change its password here.")
@@ -114,10 +114,11 @@ def verify_supervisor(request: Request, body: dict = Body(default_factory=dict),
     if not password:
         return json_error(400, "Supervisor password is required.")
     try:
+        actor = admin_email(request) or "unknown"
         if not admin_accounts.verify_supervisor(password):
-            audit.add_log("admin@infinite.com", "ADMIN_SUPERVISOR_AUTH_FAILURE", "Admin Console", "Invalid supervisor password provided", ip)
+            audit.add_log(actor, "ADMIN_SUPERVISOR_AUTH_FAILURE", "Admin Console", "Invalid supervisor password provided", ip)
             return json_error(401, "Invalid supervisor password.")
-        audit.add_log("admin@infinite.com", "ADMIN_SUPERVISOR_AUTH_SUCCESS", "Admin Console", "Supervisor action authorized", ip)
+        audit.add_log(actor, "ADMIN_SUPERVISOR_AUTH_SUCCESS", "Admin Console", "Supervisor action authorized", ip)
         return {"status": "ok", "valid": True}
     except admin_accounts.AdminPasswordNotSetup as err:
         return json_error(503, str(err))
@@ -143,6 +144,17 @@ def admin_sso_handoff(request: Request):
     response = JSONResponse(body, status_code=200 if ok else 401, headers={"Cache-Control": "no-store"})
     response.delete_cookie(ADMIN_HANDOFF_COOKIE, path="/")
     return response
+
+
+@router.get("/recent-logins")
+def recent_logins(request: Request, _: str = Depends(require_admin)):
+    """Who signed into the admin console recently (password + Microsoft SSO)."""
+    try:
+        raw = request.query_params.get("limit")
+        limit = int(raw) if raw not in (None, "") else 25
+    except (TypeError, ValueError):
+        limit = 25
+    return {"logins": audit.recent_admin_logins(limit)}
 
 
 @router.get("/sso/check")

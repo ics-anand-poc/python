@@ -33,6 +33,27 @@ def sign_token(employee_id: str, expires_in_ms: int = 7 * 24 * 60 * 60 * 1000, e
     return f"{encoded}.{signature}"
 
 
+def sign_interview_token(resume_id: str, expires_in_ms: int = 4 * 60 * 60 * 1000) -> str:
+    """Short-lived token bound to one interview/resume UUID."""
+    claims = {
+        "employee_id": "INTERVIEW",
+        "resume_id": str(resume_id).strip().lower(),
+        "exp": int(time.time() * 1000) + expires_in_ms,
+    }
+    payload = json.dumps(claims, separators=(",", ":"))
+    encoded = _b64url_encode(payload.encode("utf-8"))
+    signature = hmac.new(_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def verify_interview_token(token: Optional[str], resume_id: str) -> bool:
+    claims = token_claims(token)
+    if not claims or claims.get("employee_id") != "INTERVIEW":
+        return False
+    expected = str(resume_id or "").strip().lower()
+    return bool(expected) and str(claims.get("resume_id") or "").strip().lower() == expected
+
+
 def token_claims(token: Optional[str]) -> Optional[dict]:
     if not token or not isinstance(token, str) or "." not in token:
         return None

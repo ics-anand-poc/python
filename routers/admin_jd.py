@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
-from core.auth import acting_admin_email, require_admin
+from core.auth import acting_admin_email, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
 from core.security import get_client_ip, inspect_upload
@@ -16,7 +16,7 @@ from services.dashboard_sync import bump_sync
 from services.structured_log import write_log
 
 log = logging.getLogger("talentscope")
-router = APIRouter(prefix="/api/admin", tags=["admin-jd"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", tags=["admin-jd"], dependencies=[Depends(require_permission("requirements"))])
 
 JD_EXTS = ("pdf", "doc", "docx", "txt", "html", "htm")
 JD_MAX = 10 * 1024 * 1024

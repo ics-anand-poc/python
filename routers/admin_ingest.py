@@ -59,6 +59,8 @@ def _note(kind: str, result: dict, filename: str = "") -> str:
 @router.post("/upload_unified")
 async def upload_unified(request: Request, file: UploadFile = File(None), category: str = Form(""), activeJdId: str = Form(None),
                          actorEmail: str = Form(None), adminEmail: str = Form(None)):
+    # actorEmail/adminEmail form fields are ignored — actor comes from the JWT only.
+    _ = (actorEmail, adminEmail)
     ip = get_client_ip(request)
     limit = is_rate_limited_any([f"upload:ip:{ip}"], 60, 60 * 60_000)
     if limit.limited:
@@ -98,7 +100,7 @@ async def upload_unified(request: Request, file: UploadFile = File(None), catego
         doc_category, refresh = CATEGORY_MAP[chosen]
         stored = (automation.sanitize_corp_pool_file_name(safe) if doc_category == "Corp Pool"
                   else docs_storage.PORTAL_MAPPING_STORED_NAME if doc_category == "Portal Mapping" else safe)
-        actor = as_email(actorEmail or adminEmail) or ""
+        actor = acting_admin_email(request) or ""
         if doc_category:
             docs_storage.write_file(doc_category, stored, data)
         result: dict = {}
@@ -124,10 +126,10 @@ async def upload_unified(request: Request, file: UploadFile = File(None), catego
         write_log("ingestion", "UPLOAD_PROCESSED", "success", _note(chosen, result, safe), actor or None)
         return {"success": True, "category": chosen, "message": f"File uploaded and processed successfully under {chosen}.", "refreshResult": result}
     except ValueError as err:
-        write_log("ingestion", "UPLOAD_REJECTED", "failed", str(err), as_email(actorEmail or adminEmail) or None)
+        write_log("ingestion", "UPLOAD_REJECTED", "failed", str(err), acting_admin_email(request) or None)
         return json_error(400, str(err))
     except Exception as err:
-        write_log("ingestion", "UPLOAD_FAILED", "failed", "Upload processing failed", as_email(actorEmail or adminEmail) or None)
+        write_log("ingestion", "UPLOAD_FAILED", "failed", "Upload processing failed", acting_admin_email(request) or None)
         return public_error(err, "Upload processing failed")
 
 
