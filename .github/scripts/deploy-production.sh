@@ -12,7 +12,7 @@ if [[ -z "${GITHUB_SHA:-}" ]]; then
 fi
 
 SRC="$(git rev-parse --show-toplevel)"
-DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev/talentscope-python}"
+DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope/talentscope-python}"
 APP_DIR="$DEPLOY_ROOT/"
 ENV_FILE="$DEPLOY_ROOT/.env.azure"
 COMPOSE_FILE="$DEPLOY_ROOT/docker-compose.azure.yml"

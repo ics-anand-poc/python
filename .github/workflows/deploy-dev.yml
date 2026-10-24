@@ -1,0 +1,45 @@
+name: Python API - Deploy to Azure Development
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_development:
+        description: Confirm deployment of develop to Development
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/develop' && inputs.confirm_development == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/develop
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check Python syntax
+        run: python -m compileall -q .
+
+  deploy:
+    name: Deploy API on ICSBETINTAPP01
+    needs: validate
+    if: github.ref == 'refs/heads/develop' && inputs.confirm_development == true
+    runs-on: [self-hosted, linux, icsbetintapp01]
+    environment: development
+    timeout-minutes: 45
+    concurrency:
+      group: talentscope-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/develop
+      - name: Build, deploy, and verify API
+        run: bash .github/scripts/deploy-dev.sh
