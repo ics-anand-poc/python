@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy talentscope-python (standalone repo) into the VM's talentscope-dev stack.
-# Only develop is allowed. Layout on VM:
+# Deploy talentscope-python into the VM development stack.
+# Layout:
 #   /opt/talentscope-dev/docker-compose.azure.yml
 #   /opt/talentscope-dev/.env.local
 #   /opt/talentscope-dev/python/   <- this repo synced here
-#   /opt/talentscope-dev/ui/
 
 if [[ "${GITHUB_REF:-}" != "refs/heads/develop" ]]; then
   echo "Development deployment is allowed from develop only." >&2
@@ -21,20 +20,13 @@ fi
 SRC="$(git rev-parse --show-toplevel)"
 DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev}"
 APP_DIR="${APP_DIR:-$DEPLOY_ROOT/python}"
-ENV_FILE="${ENV_FILE:-}"
-if [[ -z "$ENV_FILE" ]]; then
-  if [[ -f "$DEPLOY_ROOT/.env.local" ]]; then
-    ENV_FILE="$DEPLOY_ROOT/.env.local"
-  else
-    ENV_FILE="$DEPLOY_ROOT/.env.azure"
-  fi
-fi
+ENV_FILE="${ENV_FILE:-$DEPLOY_ROOT/.env.local}"
 COMPOSE_FILE="${COMPOSE_FILE:-$DEPLOY_ROOT/docker-compose.azure.yml}"
 SERVICE=python
-IMAGE=talentscope-api:latest
-ROLLBACK_IMAGE=talentscope-api:dev-rollback
+IMAGE=talentscope-dev-api:latest
+ROLLBACK_IMAGE=talentscope-dev-api:rollback
 SHA="${GITHUB_SHA:0:12}"
-CANDIDATE_IMAGE="talentscope-api:deploy-$SHA"
+CANDIDATE_IMAGE="talentscope-dev-api:deploy-$SHA"
 LOCK_FILE=/tmp/talentscope-dev-python-deploy.lock
 
 exec 9>"$LOCK_FILE"
@@ -130,10 +122,8 @@ fi
 if ! printf '%s\n' "$SHA" > "$DEPLOY_ROOT/DEPLOYED_COMMIT-python"; then
   echo "Warning: could not write the API deployment marker." >&2
 fi
-if ! docker image rm "$CANDIDATE_IMAGE" >/dev/null 2>&1; then
-  echo "Warning: could not remove candidate image $CANDIDATE_IMAGE." >&2
-fi
+docker image rm "$CANDIDATE_IMAGE" >/dev/null 2>&1 || true
 if [[ -n "$PREVIOUS_IMAGE_REF" ]]; then
-  docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || echo "Warning: could not remove rollback image $ROLLBACK_IMAGE." >&2
+  docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true
 fi
-echo "== API development deployment OK: $SHA is live"
+echo "== API development deployment OK: $SHA is live on :8001"

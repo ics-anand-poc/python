@@ -1,6 +1,5 @@
 name: Python API - Deploy to Azure Development
 
-# Code is taken from the develop branch only (no main / other branches).
 on:
   push:
     branches: [develop]
@@ -31,7 +30,7 @@ jobs:
         run: python -m compileall -q .
 
   deploy:
-    name: Deploy API on ICSBETINTAPP01
+    name: Deploy API on ICSBETINTAPP01 (dev)
     needs: validate
     if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || inputs.confirm_development == true)
     runs-on: [self-hosted, linux, icsbetintapp01]
