@@ -53,10 +53,11 @@ def test_roster_crud_and_shortlist(client, store, admin):
     assert mixed["employee"]["shortlisted"] is False
     assert client.post("/api/admin/employees", headers=admin, json={"employeeId": "ZZ"}).status_code == 404
     patched = client.patch("/api/admin/employees", headers=admin,
-                           json={"employeeId": "E3", "updates": {"full_name": "New Name", "score": 150, "score_override_jd_id": "jd1", "employee_id": "E9"}}).json()
-    assert patched["employee"]["employee_id"] == "E9" and patched["employee"]["score"] == 100 and patched["employee"]["manually_edited"] is True
+                           json={"employeeId": "E3", "updates": {"full_name": "New Name", "employee_id": "E9"}}).json()
+    assert patched["employee"]["employee_id"] == "E9" and patched["employee"]["manually_edited"] is True
+    assert client.patch("/api/admin/employees", headers=admin,
+                        json={"employeeId": "E9", "updates": {"score": 150}}).status_code == 400
     assert client.patch("/api/admin/employees", headers=admin, json={"employeeId": "E1", "updates": {"employee_id": "E2"}}).status_code == 409
-    assert client.patch("/api/admin/employees", headers=admin, json={"employeeId": "E1", "updates": {"score": "abc"}}).status_code == 400
     gone = client.request("DELETE", "/api/admin/employees", headers=admin, json={"ids": ["E1"]}).json()
     assert gone["deleted"] == 1 and [e["employee_id"] for e in gone["employees"]] == ["E2", "E9"]
     assert "e1" in corp_pool.load_deleted()["ids"]

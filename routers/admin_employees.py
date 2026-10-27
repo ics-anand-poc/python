@@ -1,4 +1,5 @@
 import csv
+import html
 import io
 import logging
 from typing import Optional
@@ -9,8 +10,9 @@ from fastapi.responses import Response
 from core.auth import acting_admin_email, require_any_permission, require_permission
 from core.db import get_store
 from core.errors import json_error, public_error
+from core.security import get_client_ip
 from services import admin_accounts, corp_pool, docs_storage, portal_roster as pr, test_video
-from services import employee_tests as et
+from services import accounts, audit, employee_portal_admin as portal_admin, employee_tests as et, mailer
 from services.products import format_topic_title_for_display
 from services.structured_log import write_log
 
@@ -175,6 +177,8 @@ def update_employee(body: dict = Body(default_factory=dict)):
         matched = next((e for e in roster if e["employee_id"] == employee_id), None)
         if not matched:
             return json_error(404, "Employee not found")
+        if "score" in updates or "score_override" in updates or "score_override_jd_id" in updates:
+            return json_error(400, "Corp Pool scores are calculated automatically and cannot be edited.")
         next_id = str(updates.get("employee_id", matched["employee_id"]) or "").strip()
         if not next_id:
             return json_error(400, "Employee ID cannot be empty.")
@@ -183,19 +187,6 @@ def update_employee(body: dict = Body(default_factory=dict)):
         for field in EDITABLE:
             if field in updates:
                 matched[field] = "" if updates[field] is None else str(updates[field])
-        if "score" in updates or "score_override" in updates:
-            raw = updates["score_override"] if "score_override" in updates else updates["score"]
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                return json_error(400, "Score must be a number.")
-            if value != value or value in (float("inf"), float("-inf")):
-                return json_error(400, "Score must be a number.")
-            clamped = max(0, min(100, _round(value)))
-            matched["score"] = clamped
-            matched["score_override"] = clamped
-            if "score_override_jd_id" in updates:
-                matched["score_override_jd_id"] = str(updates["score_override_jd_id"] or "").strip() or None
         matched["employee_id"] = next_id
         matched["manually_edited"] = True
         corp_pool.save_roster(roster)
@@ -205,6 +196,69 @@ def update_employee(body: dict = Body(default_factory=dict)):
     except Exception as err:
         write_log("employee", "UPDATE_CORP_POOL_EMPLOYEE_FAILED", "failed", f"Failed to update Corp Pool employee {employee_id or 'unknown'}")
         return public_error(err, "Failed to update employee")
+
+
+@router.patch("/portal/{employee_id}", dependencies=[Depends(require_permission("employeePortal"))])
+def update_portal_employee(employee_id: str, request: Request, body: dict = Body(default_factory=dict)):
+    account = accounts.get_account(employee_id)
+    if not account or account.get("role") != "employee" or not account.get("product_qb_eligible"):
+        return json_error(404, "Employee portal user not found")
+    updates = body.get("updates") if isinstance(body.get("updates"), dict) else {}
+    details = {
+        "employee_id": account["employee_id"],
+        "full_name": updates.get("full_name", account["full_name"]),
+        "email": updates.get("email", account["email"]),
+        "designation": updates.get("designation", account["designation"]),
+        "department": updates.get("department", account["department"]),
+        "product": updates.get("product", account["product"]),
+    }
+    try:
+        result = portal_admin.provision_employee(details)
+        actor = acting_admin_email(request) or "unknown"
+        audit.add_log(actor, "EMPLOYEE_PORTAL_USER_UPDATED", "Employee Portal",
+                      f"Updated employee portal record {result['employeeId']}.", get_client_ip(request))
+        return {"success": True, **result}
+    except ValueError as err:
+        return json_error(400, str(err))
+    except Exception as err:
+        log.exception("Failed to update employee portal record %s", employee_id)
+        return public_error(err, "Failed to update employee portal record")
+
+
+@router.post("/portal/{employee_id}/reset-password", dependencies=[Depends(require_permission("employeePortal"))])
+def reset_portal_employee_password(employee_id: str, request: Request):
+    account = accounts.get_account(employee_id)
+    if not account or account.get("role") != "employee" or not account.get("product_qb_eligible"):
+        return json_error(404, "Employee portal user not found")
+    email = str(account.get("email") or "").strip()
+    if not email:
+        return json_error(400, "The employee has no registered email address. Update their record before resetting the password.")
+    password_hash, password_salt = accounts.hash_password(account["employee_id"])
+    account.update({"password_hash": password_hash, "password_salt": password_salt, "is_first_login": False})
+    if not accounts.upsert_account(account):
+        return json_error(500, "Password reset could not be saved.")
+    employee_name = html.escape(account.get("full_name") or account["employee_id"])
+    employee_id_html = html.escape(account["employee_id"])
+    message = (
+        f"<p>Hello {employee_name},</p>"
+        "<p>An administrator has reset your TalentScope Employee Portal password.</p>"
+        f"<p><strong>Employee ID:</strong> {employee_id_html}<br>"
+        f"<strong>Temporary password:</strong> {employee_id_html}</p>"
+        "<p>Sign in using your Employee ID as the temporary password. For your security, we recommend changing it after signing in.</p>"
+        "<p>If you did not expect this change, please contact your administrator.</p>"
+    )
+    status, send_error = mailer.dispatch(email, "TalentScope Employee Portal password reset", message)
+    actor = acting_admin_email(request) or "unknown"
+    audit.add_log(actor, "EMPLOYEE_PORTAL_PASSWORD_RESET", account["employee_id"],
+                  "Reset employee portal password to the Employee ID.", get_client_ip(request))
+    if status != "sent":
+        log.error("Employee portal password reset email failed for %s: %s", employee_id, send_error or status)
+        return {
+            "success": True,
+            "emailSent": False,
+            "message": "Password reset successfully, but the notification email could not be delivered. Contact the employee through another channel.",
+        }
+    return {"success": True, "emailSent": True, "message": "Password reset and notification email sent."}
 
 
 @router.delete("")

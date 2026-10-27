@@ -158,10 +158,13 @@ def assigned_questions_for(employee_id: str) -> list[str]:
 
 def _eligible_accounts() -> list[dict]:
     rows = get_store().select("employees", {"product_qb_eligible": True},
-                              ["employee_id", "email", "full_name", "department", "role", "product"], "employee_id asc")
+                              ["employee_id", "email", "email_verified", "full_name", "department", "role", "designation", "product"], "employee_id asc")
     return [{
-        "employee_id": str(r["employee_id"]), "full_name": r.get("full_name") or str(r["employee_id"]), "role": r.get("role") or "employee",
+        "employee_id": str(r["employee_id"]), "full_name": r.get("full_name") or str(r["employee_id"]),
+        "role": r.get("designation") or r.get("role") or "employee",
         "domain": r.get("department") or "", "product": r.get("product") or "", "email": r.get("email") or "", "ddh": "",
+        "email_verified": bool(r.get("email_verified")),
+        "portal_managed": True,
         "emp_status": "Confirmed", "remarks": "", "assigned_questions": [], "assigned_question_count": 0,
     } for r in rows if r.get("employee_id")]
 
@@ -173,6 +176,8 @@ def _merge(roster: dict, mapped: Optional[dict]) -> dict:
         "employee_id": roster["employee_id"] or mapped["employee_id"], "full_name": roster["full_name"] or mapped["full_name"],
         "role": roster["role"] or mapped["role"], "domain": roster["domain"] or mapped["domain"],
         "product": roster["product"] or mapped["product"], "email": roster["email"] or mapped["email"], "ddh": roster["ddh"] or mapped["ddh"],
+        "email_verified": bool(roster.get("email_verified")),
+        "portal_managed": True,
         "emp_status": mapped["emp_status"] or roster["emp_status"], "remarks": mapped["remarks"] or roster["remarks"],
         "assigned_questions": mapped["assigned_questions"],
         "assigned_question_count": mapped["assigned_question_count"] or roster["assigned_question_count"],
@@ -257,7 +262,7 @@ def build_portal_employees(results: list[dict]) -> list[dict]:
     for row in mapping:
         key = normalize_employee_id(row["employee_id"])
         if key not in existing:
-            profiles.append(row)
+            profiles.append({**row, "portal_managed": False, "email_verified": False})
             existing.add(key)
     merged = merge_portal_data(profiles, results, manifest)
     merged.sort(key=lambda r: (str(r.get("full_name") or "").lower(), str(r.get("employee_id") or "")))

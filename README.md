@@ -31,6 +31,18 @@ npm run db:migrate
 
 Seed JSON files are excluded from Git and Docker because they contain personal data. Supply approved, sanitized seed files privately before running `npm run db:deploy-data` or `npm run db:azure`. Schema-only Azure migrations use `npm run db:migrate -- --target=azure`.
 
+## Employee Portal user management
+
+Admins with **Portal Config** access can open **Portal Config → Employee Portal Users** to upload product question banks, provision one employee, or bulk-import a roster. The roster accepts `.xlsx`, `.xlsm`, or UTF-8 `.csv` files with `Emp ID`, `Name`, `Email` (including `Nokia Email ID`), and `Product` columns; `Role`/`Designation` is optional. Product names must match a configured product bank. Admins with **Employee Portal** access can edit managed users inline and reset their passwords from the Actions column in the main Employee Portal table.
+
+Question banks support the stacked product-sheet format and wide MCQ format used by the schedule samples. Select the product sheet when needed and set the number of questions assigned per employee. Each new assessment samples that number of questions randomly from the uploaded bank for that product. Re-imports update employee details without resetting a matching existing assessment or password.
+
+New users sign in with their Employee ID as the initial password. Changing it after signing in is recommended, but not forced. Password reset and user-initiated password changes require a one-time email code. Admins can reset a portal user's password to their Employee ID from the Employee Portal table's Actions column and email the temporary credentials to the registered address. After a reset, the employee can sign in without a forced password-change prompt; the email recommends changing the temporary password. Configure working SMTP delivery before enabling these flows; simulated or failed mail delivery is reported and never presented as a delivered email.
+
+The employee roster shows a green **Verified** badge after the employee successfully verifies their current email with an OTP during password reset or change. Updating the email address clears the badge until the new address is verified.
+
+Apply `db/mssql/migrations/010_employee_portal_management.sql` and `011_employee_email_verified.sql` before using employee provisioning with SQL Server. PostgreSQL deployments must apply both corresponding migrations in `db/postgres/migrations/`; Supabase deployments must apply `db/supabase/migrations/20261027210000_employee_portal_management.sql` and `20261027231500_employee_email_verified.sql`.
+
 ### Optional Supabase local database
 
 The Supabase setup under `db/supabase/` contains the PostgreSQL schema. The API connects to a hosted Supabase project through the HTTPS Data API; no Supabase Docker stack or database password is needed.
