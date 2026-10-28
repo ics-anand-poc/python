@@ -78,21 +78,42 @@ def normalize_proctoring(raw) -> dict:
 
 
 def record_violation(existing: dict, violation_type: str, detail=None, category=None, severity=None) -> dict:
-    last = _ms(existing["lastViolationAt"]) if existing.get("lastViolationAt") else 0
     t = (violation_type or "").lower()
-    cooldown = FACE_MISSING_COOLDOWN_MS if ("face missing" in t or "face not" in t) else VIOLATION_COOLDOWN_MS
-    if last and datetime.now(timezone.utc).timestamp() * 1000 - last < cooldown:
-        return existing
-    count = min(MAX_VIOLATIONS, (existing.get("warningCount") or 0) + 1)
+    is_face_missing = "face missing" in t or "face not" in t
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    # Keep Face Missing cooldown separate so it cannot suppress hard strikes.
+    if is_face_missing:
+        last_face = _ms(existing.get("lastFaceMissingAt")) if existing.get("lastFaceMissingAt") else 0
+        if last_face and now_ms - last_face < FACE_MISSING_COOLDOWN_MS:
+            return existing
+    else:
+        last = _ms(existing["lastViolationAt"]) if existing.get("lastViolationAt") else 0
+        if last and now_ms - last < VIOLATION_COOLDOWN_MS:
+            return existing
     cls = classify(violation_type)
     now = _now()
+    entry = {
+        "type": violation_type[:120],
+        "timestamp": now,
+        "category": category or cls["category"],
+        "severity": severity or cls["severity"],
+        "detail": detail[:240] if detail else None,
+    }
+    # Face Missing is log-only: browser face models often false-negative while the
+    # recorded video clearly shows the candidate. Do NOT burn strike / auto-submit.
+    if is_face_missing:
+        return {
+            **existing,
+            "lastFaceMissingAt": now,
+            "faceMissingEvents": int(existing.get("faceMissingEvents") or 0) + 1,
+            "violations": [*existing["violations"], entry],
+        }
+    count = min(MAX_VIOLATIONS, (existing.get("warningCount") or 0) + 1)
     return {
         **existing, "warningCount": count,
         "autoSubmitted": bool(existing.get("autoSubmitted")) or count >= MAX_VIOLATIONS,
         "lastViolationAt": now,
-        "violations": [*existing["violations"], {
-            "type": violation_type[:120], "timestamp": now, "category": category or cls["category"],
-            "severity": severity or cls["severity"], "detail": detail[:240] if detail else None}],
+        "violations": [*existing["violations"], entry],
     }
 
 
