@@ -15,6 +15,8 @@ SWEEP_INTERVAL_S = 120
 
 MAX_VIOLATIONS = 3
 VIOLATION_COOLDOWN_MS = 2500
+# Face Missing flicker was burning 3 strikes in ~15s and auto-submitting fair attempts.
+FACE_MISSING_COOLDOWN_MS = 45_000
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
@@ -77,7 +79,9 @@ def normalize_proctoring(raw) -> dict:
 
 def record_violation(existing: dict, violation_type: str, detail=None, category=None, severity=None) -> dict:
     last = _ms(existing["lastViolationAt"]) if existing.get("lastViolationAt") else 0
-    if last and datetime.now(timezone.utc).timestamp() * 1000 - last < VIOLATION_COOLDOWN_MS:
+    t = (violation_type or "").lower()
+    cooldown = FACE_MISSING_COOLDOWN_MS if ("face missing" in t or "face not" in t) else VIOLATION_COOLDOWN_MS
+    if last and datetime.now(timezone.utc).timestamp() * 1000 - last < cooldown:
         return existing
     count = min(MAX_VIOLATIONS, (existing.get("warningCount") or 0) + 1)
     cls = classify(violation_type)
