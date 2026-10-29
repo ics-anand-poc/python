@@ -74,13 +74,16 @@ def update_user(employee_id: str, request: Request, body: dict = Body(default_fa
         return json_error(404, "Employee portal user not found")
     result = _record_result({
         "employee_id": employee_id,
-        "full_name": body.get("name") or body.get("full_name"),
-        "email": body.get("email"),
-        "designation": body.get("designation"),
-        "product": body.get("product"),
+        "full_name": body.get("name", body.get("full_name", account.get("full_name"))),
+        "email": body.get("email", account.get("email")),
+        "designation": body.get("designation", account.get("designation")),
+        "department": body.get("department", account.get("department")),
+        "product": body.get("product", account.get("product")),
     }, actor, request)
     if not result["success"]:
         return json_error(400, result["error"])
+    audit.add_log(actor, "EMPLOYEE_PORTAL_PROFILE_UPDATED", "Employee Portal",
+                  f"Updated employee portal profile for {employee_id}.", get_client_ip(request))
     return result
 
 

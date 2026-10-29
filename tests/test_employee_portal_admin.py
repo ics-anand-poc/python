@@ -211,6 +211,40 @@ def test_employee_portal_password_reset_surfaces_email_delivery_failure(client, 
     assert accounts.verify_password("EMP61", employee["password_salt"], employee["password_hash"])
 
 
+def test_employee_portal_profile_edit_preserves_assessment_score(client, store, monkeypatch):
+    admin = _admin(client, monkeypatch)
+    bank = client.post(
+        "/api/admin/employee-portal/question-banks",
+        headers=admin,
+        data={"product": "Product A", "question_count": "1"},
+        files={"file": ("bank.csv", _bank_csv(), "text/csv")},
+    )
+    assert bank.status_code == 200
+    created = client.post("/api/admin/employee-portal/users", headers=admin, json={
+        "employeeId": "EMP63", "name": "Portal User", "email": "portal@example.com",
+        "designation": "Engineer", "product": "Product A",
+    })
+    assert created.status_code == 200
+    test_id = created.json()["testId"]
+    store.update("tests", {"status": "completed", "score_correct": 1, "score_percent": 100}, {"id": test_id})
+
+    updated = client.patch("/api/admin/employee-portal/users/EMP63", headers=admin, json={
+        "name": "Updated Portal User", "email": "updated@example.com",
+        "designation": "Senior Engineer", "department": "Engineering",
+        "score": 0,
+    })
+
+    assert updated.status_code == 200, updated.text
+    employee = store.first("employees", {"employee_id": "EMP63"})
+    assert employee["full_name"] == "Updated Portal User"
+    assert employee["email"] == "updated@example.com"
+    assert employee["designation"] == "Senior Engineer"
+    assert employee["department"] == "Engineering"
+    assert employee["email_verified"] is False
+    result = store.first("tests", {"id": test_id})
+    assert result["score_correct"] == 1 and result["score_percent"] == 100
+
+
 def test_employee_portal_table_actions_update_and_reset_managed_accounts(client, store, monkeypatch):
     admin = _admin(client, monkeypatch)
     bank = client.post(

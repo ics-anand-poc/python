@@ -18,7 +18,8 @@ PRODUCT_ASSESSMENT_HISTORY_TOPIC_ID = "resource-product-assessment-history"
 
 COLUMNS = [
     "employee_id", "full_name", "email", "department", "role", "is_first_login", "password_hash", "password_salt",
-    "xp_points", "streak_days", "skill_level", "ai_readiness_score", "product", "product_qb_eligible", "assessment_only",
+    "xp_points", "streak_days", "skill_level", "ai_readiness_score", "product", "designation", "product_qb_eligible",
+    "assessment_only", "email_verified",
 ]
 
 
@@ -46,7 +47,9 @@ def map_row(row: dict) -> dict:
         "email": str(row.get("email") or ""),
         "department": str(row.get("department") or "general"),
         "role": str(row.get("role") or "employee"),
+        "designation": str(row.get("designation") or ""),
         "is_first_login": bool(row.get("is_first_login") or False),
+        "email_verified": bool(row.get("email_verified") or False),
         "password_hash": row.get("password_hash") or None,
         "password_salt": row.get("password_salt") or None,
         "xp_points": _int(row.get("xp_points")),
@@ -124,6 +127,8 @@ def upsert_account(account: dict) -> bool:
         "department": account.get("department") or "general",
         "role": account.get("role") or "employee",
         "product": account.get("product"),
+        "designation": account.get("designation") or "",
+        "email_verified": bool(account.get("email_verified", False)),
         "is_first_login": bool(account.get("is_first_login", False)),
         "password_hash": account.get("password_hash"),
         "password_salt": account.get("password_salt"),

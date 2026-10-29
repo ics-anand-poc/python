@@ -108,6 +108,23 @@ def test_status_derivation():
     assert pr.normalize_employee_id("1001.0") == "1001" and pr.mapping_looks_valid(mapping_book()) is True
 
 
+def test_portal_roster_identifies_password_managed_accounts(store):
+    store.seed("employees", [
+        {"id": "e1", "employee_id": "1001", "email": "a@x.com", "full_name": "Managed",
+         "role": "employee", "product": "One-NDS", "product_qb_eligible": True},
+    ])
+    eligible = pr._eligible_accounts()
+    assert len(eligible) == 1 and eligible[0]["product_qb_eligible"] is True
+
+    mapping = {
+        "employee_id": "1001", "full_name": "Mapped", "role": "employee", "domain": "eng",
+        "product": "One-NDS", "email": "a@x.com", "ddh": "", "emp_status": "Confirmed",
+        "remarks": "", "assigned_questions": [], "assigned_question_count": 0,
+    }
+    assert pr._merge(eligible[0], mapping)["product_qb_eligible"] is True
+    assert pr._merge({**mapping, "product_qb_eligible": False}, mapping)["product_qb_eligible"] is False
+
+
 def test_reset_test_and_delete_video(client, store, admin):
     from services import test_video
 

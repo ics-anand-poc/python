@@ -212,10 +212,13 @@ def _domain_value(value) -> str:
 
 def _eligible_accounts() -> list[dict]:
     rows = get_store().select("employees", {"product_qb_eligible": True},
-                              ["employee_id", "email", "full_name", "department", "role", "product"], "employee_id asc")
+                              ["employee_id", "email", "full_name", "department", "role", "product", "designation"], "employee_id asc")
     return [{
         "employee_id": str(r["employee_id"]), "full_name": r.get("full_name") or str(r["employee_id"]), "role": r.get("role") or "employee",
         "domain": _domain_value(r.get("department")), "product": r.get("product") or "", "email": r.get("email") or "", "ddh": "",
+        "department": r.get("department") or "", "designation": r.get("designation") or "",
+        "account_product": r.get("product") or "",
+        "product_qb_eligible": True,
         "emp_status": "Confirmed", "remarks": "", "assigned_questions": [], "assigned_question_count": 0,
     } for r in rows if r.get("employee_id")]
 
@@ -233,6 +236,10 @@ def _merge(roster: dict, mapped: Optional[dict]) -> dict:
         "employee_id": roster["employee_id"] or mapped["employee_id"], "full_name": roster["full_name"] or mapped["full_name"],
         "role": roster["role"] or mapped["role"], "domain": domain,
         "product": product, "email": roster["email"] or mapped["email"], "ddh": roster["ddh"] or mapped["ddh"],
+        "department": roster.get("department") or mapped.get("domain") or "",
+        "designation": roster.get("designation") or mapped.get("designation") or "",
+        "account_product": roster.get("account_product") or mapped.get("account_product") or "",
+        "product_qb_eligible": bool(roster.get("product_qb_eligible")),
         "emp_status": mapped["emp_status"] or roster["emp_status"], "remarks": mapped["remarks"] or roster["remarks"],
         "assigned_questions": questions,
         "assigned_question_count": mapped.get("assigned_question_count")

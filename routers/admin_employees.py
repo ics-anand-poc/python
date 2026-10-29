@@ -168,6 +168,8 @@ def update_employee(body: dict = Body(default_factory=dict)):
     updates = body.get("updates") if isinstance(body.get("updates"), dict) else {}
     if not employee_id:
         return json_error(400, "Employee ID is required")
+    if {"score", "score_override", "score_override_jd_id"}.intersection(updates):
+        return json_error(400, "Score is calculated automatically and cannot be edited.")
     try:
         roster = corp_pool.load_roster()
         if not roster:
@@ -183,19 +185,6 @@ def update_employee(body: dict = Body(default_factory=dict)):
         for field in EDITABLE:
             if field in updates:
                 matched[field] = "" if updates[field] is None else str(updates[field])
-        if "score" in updates or "score_override" in updates:
-            raw = updates["score_override"] if "score_override" in updates else updates["score"]
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                return json_error(400, "Score must be a number.")
-            if value != value or value in (float("inf"), float("-inf")):
-                return json_error(400, "Score must be a number.")
-            clamped = max(0, min(100, _round(value)))
-            matched["score"] = clamped
-            matched["score_override"] = clamped
-            if "score_override_jd_id" in updates:
-                matched["score_override_jd_id"] = str(updates["score_override_jd_id"] or "").strip() or None
         matched["employee_id"] = next_id
         matched["manually_edited"] = True
         corp_pool.save_roster(roster)
