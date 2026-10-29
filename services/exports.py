@@ -92,12 +92,25 @@ def proctoring_summary(account: dict) -> Optional[dict]:
     proctoring = (primary or {}).get("proctoring")
     if not proctoring:
         return None
-    violations = proctoring.get("violations") if isinstance(proctoring.get("violations"), list) else []
-    flags = proctoring.get("warningCount")
-    flags = flags if flags is not None else len(violations)
-    if flags <= 0 and not violations:
+    raw = proctoring.get("violations") if isinstance(proctoring.get("violations"), list) else []
+    violations = []
+    face_kept = False
+    for v in raw:
+        if not isinstance(v, dict):
+            continue
+        t = str(v.get("type") or "").lower()
+        if "face missing" in t or "face not" in t:
+            if face_kept:
+                continue
+            face_kept = True
+        violations.append(v)
+    try:
+        hard = int(proctoring.get("warningCount") or 0)
+    except (TypeError, ValueError):
+        hard = 0
+    if hard <= 0 and not violations:
         return None
-    return {"flagCount": max(flags, len(violations)), "violations": violations}
+    return {"flagCount": max(hard, len(violations)), "violations": violations}
 
 
 def violations_text(violations: list[dict]) -> str:

@@ -101,12 +101,19 @@ def record_violation(existing: dict, violation_type: str, detail=None, category=
     }
     # Face Missing is log-only: browser face models often false-negative while the
     # recorded video clearly shows the candidate. Do NOT burn strike / auto-submit.
+    # Keep at most one Face Missing row in violations (count extras in faceMissingEvents).
     if is_face_missing:
+        already = any(
+            "face missing" in str(v.get("type") or "").lower()
+            or "face not" in str(v.get("type") or "").lower()
+            for v in (existing.get("violations") or [])
+            if isinstance(v, dict)
+        )
         return {
             **existing,
             "lastFaceMissingAt": now,
             "faceMissingEvents": int(existing.get("faceMissingEvents") or 0) + 1,
-            "violations": [*existing["violations"], entry],
+            "violations": existing["violations"] if already else [*existing["violations"], entry],
         }
     count = min(MAX_VIOLATIONS, (existing.get("warningCount") or 0) + 1)
     return {

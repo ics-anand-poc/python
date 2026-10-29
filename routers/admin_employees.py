@@ -533,8 +533,64 @@ def export_portal(request: Request):
     try:
         results = _test_results(get_store())
         employees = pr.build_portal_employees(results)
+        # Optional UI filters (same as Employee Portal table) so TPM / domain slices export correctly.
+        q = request.query_params
+        product = (q.get("product") or "").strip().lower()
+        domain = (q.get("domain") or "").strip().lower()
+        status = (q.get("status") or "").strip().lower()
+        search = (q.get("search") or "").strip().lower()
+        completed_on = (q.get("completedOn") or "").strip().lower()
+
+        def _ok(row: dict) -> bool:
+            if product and product not in ("all", ""):
+                rp = str(row.get("product") or "").strip()
+                if product == "__none__":
+                    if rp:
+                        return False
+                elif rp.lower() != product:
+                    return False
+            if domain and domain not in ("all", ""):
+                rd = str(row.get("domain") or "").strip()
+                if domain == "__none__":
+                    if rd:
+                        return False
+                elif rd.lower() != domain:
+                    return False
+            if status and status not in ("all", ""):
+                rs = str(row.get("test_status") or "").strip().lower()
+                if status == "completed" and rs != "completed":
+                    return False
+                if status == "pending" and rs not in ("pending", "assigned", "not_started", ""):
+                    if rs == "completed" or rs == "in_progress":
+                        return False
+                if status == "in_progress" and rs != "in_progress":
+                    return False
+            if completed_on and completed_on not in ("all", ""):
+                raw = row.get("completed_at") or ""
+                day = str(raw)[:10]
+                if day != completed_on:
+                    return False
+            if search:
+                blob = " ".join(
+                    str(row.get(k) or "")
+                    for k in ("full_name", "employee_id", "role", "domain", "product", "email", "ddh")
+                ).lower()
+                if search not in blob and not (search == "nds" and str(row.get("product") or "").lower() == "sdl"):
+                    return False
+            return True
+
+        employees = [e for e in employees if _ok(e)]
         done = [a["test_id"] for a in employees if a.get("test_id") and a.get("test_status") == "completed"]
-        return _xlsx(exports.portal_workbook(employees, et.question_attempts_batch(done)), f"employee_portal_test_results_{date.today().isoformat()}.xlsx")
+        stamp = date.today().isoformat()
+        suffix = []
+        if domain and domain not in ("all", "", "__none__"):
+            suffix.append(domain.replace(" ", "_"))
+        if product and product not in ("all", "", "__none__"):
+            suffix.append(product.replace(" ", "_").replace("/", "-"))
+        name = "employee_portal_test_results"
+        if suffix:
+            name += "_" + "_".join(suffix[:2])
+        return _xlsx(exports.portal_workbook(employees, et.question_attempts_batch(done)), f"{name}_{stamp}.xlsx")
     except Exception as err:
         return public_error(err, "Export failed")
 

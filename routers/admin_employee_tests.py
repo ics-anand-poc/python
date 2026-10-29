@@ -13,7 +13,9 @@ from services import employee_tests as et, test_backup, test_video
 router = APIRouter(prefix="/api/admin/employee-tests", tags=["admin-employee-tests"], dependencies=[Depends(require_permission("employeePortal"))])
 
 NAME_RE = re.compile(r"^[\w.\- ()]+$")
-HEADERS = {"Content-Type": "video/webm; codecs=vp8", "Accept-Ranges": "bytes", "Cache-Control": "private, no-cache"}
+# Do not force codecs=vp8 — MediaRecorder may use vp8/vp9; a wrong codecs=
+# parameter can make Chromium refuse playback even when the file is valid.
+HEADERS = {"Content-Type": "video/webm", "Accept-Ranges": "bytes", "Cache-Control": "private, no-cache"}
 
 
 @router.get("/{test_id}/attempts")
@@ -41,7 +43,7 @@ def backup(test_id: str):
     return {"success": True, "testId": tid, "backup": saved}
 
 
-@router.get("/{test_id}/video")
+@router.api_route("/{test_id}/video", methods=["GET", "HEAD"])
 def video(test_id: str, request: Request):
     tid = as_uuid(test_id)
     data = test_video.read(tid) if tid else None
@@ -54,7 +56,12 @@ def video(test_id: str, request: Request):
     etag = f'"{hashlib.md5(data).hexdigest()}"'
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": HEADERS["Cache-Control"]})
-    base = {**HEADERS, "ETag": etag, "Content-Disposition": disposition}
+    base = {
+        **HEADERS,
+        "ETag": etag,
+        "Content-Disposition": disposition,
+        "Content-Length": str(size),
+    }
     header = request.headers.get("range")
     if header:
         m = re.match(r"bytes=(\d*)-(\d*)", header)
@@ -62,6 +69,14 @@ def video(test_id: str, request: Request):
         end = min(int(m.group(2)) if m and m.group(2) else size - 1, size - 1)
         if start > end or start >= size:
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
-        return Response(data[start:end + 1], status_code=206,
-                        headers={**base, "Content-Range": f"bytes {start}-{end}/{size}"})
-    return Response(data, headers=base)
+        chunk = data[start : end + 1]
+        return Response(
+            b"" if request.method == "HEAD" else chunk,
+            status_code=206,
+            headers={
+                **base,
+                "Content-Length": str(len(chunk)),
+                "Content-Range": f"bytes {start}-{end}/{size}",
+            },
+        )
+    return Response(b"" if request.method == "HEAD" else data, headers=base)

@@ -12,8 +12,13 @@ def bearer_token(request: Request) -> str:
 
 
 def admin_token(request: Request) -> str:
-    # Never accept tokens from query strings (leaks via logs / Referer / history).
-    return bearer_token(request)
+    bearer = bearer_token(request)
+    if bearer:
+        return bearer
+    # <video src> cannot send Authorization; allow ?token= only for GET/HEAD media.
+    if request.method in ("GET", "HEAD") and request.url.path.rstrip("/").endswith("/video"):
+        return request.query_params.get("token") or ""
+    return ""
 
 
 def is_admin_request(request: Request) -> bool:

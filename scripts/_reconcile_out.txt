@@ -1,0 +1,98 @@
+﻿.\venv\Scripts\python.exe : python-dotenv could not parse statement starting at line 99
+At C:\Users\aryanmi\AppData\Local\Temp\ps-script-61c6a589-f09b-4953-af73-f16f7268d347.ps1:85 char:12
++ cd python; .\venv\Scripts\python.exe scripts\_portal_reconcile_oct14. ...
++            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (python-dotenv c...ting at line 99:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+========================================================================
+LIVE: TalentScope_DB_Live
+========================================================================
+
+Rows with any activity since 2026-10-14: 0
+Current product-topic completions since 2026-10-14: 0
+
+## CURRENT product assessments completed (admin primary / Completed On)
+
+## Daily distinct emp (current product completed) ù IST (browser India)
+
+## Daily distinct emp (current product completed) ù UTC
+
+## History-topic completions since cut (resets; NOT admin primary if current pending)
+
+## Named people of interest (any topic)
+
+## Admin portal-eligible only (product_qb_eligible=1, current product completed, IST)
+
+========================================================================
+DEV: TalentScope_DB_Dev
+========================================================================
+
+Rows with any activity since 2026-10-14: 15
+Current product-topic completions since 2026-10-14: 4
+
+## CURRENT product assessments completed (admin primary / Completed On)
+  1040783 | Megha Kumari | megha_kumari.kumari.ext@nokia.com | status=completed score=88.0 qb=True
+    completed=2026-10-14T09:26:55.199000+00:00 IST=2026-10-14 UTC=2026-10-14
+  TESTEMP03 | Test User 3 | testemp03@infinite.com | status=completed score=0.0 qb=True [TESTEMP]
+    completed=2026-10-21T05:30:58.145000+00:00 IST=2026-10-21 UTC=2026-10-21
+  TESTEMP01 | Test User 1 | testemp01@infinite.com | status=completed score=16.0 qb=True [TESTEMP]
+    completed=2026-10-21T05:33:39.407000+00:00 IST=2026-10-21 UTC=2026-10-21
+  1042494 | Gudla Sri Sai Guru | gudla.srisaiguru.ext@nokia.com | status=completed score=100.0 qb=True
+    completed=2026-10-22T08:48:13.170000+00:00 IST=2026-10-22 UTC=2026-10-22
+
+## Daily distinct emp (current product completed) ù IST (browser India)
+  2026-10-14: 1 -> ['1040783']
+  2026-10-21: 2 -> ['TESTEMP01 [TESTEMP]', 'TESTEMP03 [TESTEMP]']
+  2026-10-22: 1 -> ['1042494']
+
+## Daily distinct emp (current product completed) ù UTC
+  2026-10-14: 1 -> ['1040783']
+  2026-10-21: 2 -> ['TESTEMP01 [TESTEMP]', 'TESTEMP03 [TESTEMP]']
+  2026-10-22: 1 -> ['1042494']
+
+## History-topic completions since cut (resets; NOT admin primary if current pending)
+  2026-10-09 IST | 1042862 | Sanjay Kumar Pandey | HLR-HSS (previous)
+    completed=2026-10-09T15:23:57.530000+00:00
+  2026-10-13 IST | TESTEMP01 | Test User 1 | CSD (previous) [TESTEMP]
+    completed=2026-10-13T10:33:33.061000+00:00
+  2026-10-14 IST | TESTEMP03 | Test User 3 | NN (previous) [TESTEMP]
+    completed=2026-10-14T03:00:13.114000+00:00
+  2026-10-15 IST | TESTEMP02 | Test User 2 | NCC (previous) [TESTEMP]
+    completed=2026-10-15T09:18:28.511000+00:00
+  2026-10-15 IST | TESTEMP02 | Test User 2 | NCC (previous) [TESTEMP]
+    completed=2026-10-15T09:31:43.229000+00:00
+  2026-10-16 IST | 1040066 | Mohammad Danish Khan | HLR-HSS (previous)
+    completed=2026-10-16T06:54:51.360000+00:00
+  2026-10-16 IST | 1034853 | Aryaman Singh | UDM (previous)
+    completed=2026-10-16T06:55:58.098000+00:00
+  2026-10-21 IST | TESTEMP01 | Test User 1 | CSD (previous) [TESTEMP]
+    completed=2026-10-21T03:10:30.217000+00:00
+  2026-10-21 IST | TESTEMP01 | Test User 1 | CSD (previous) [TESTEMP]
+    completed=2026-10-21T03:42:11.543000+00:00
+  2026-10-21 IST | TESTEMP02 | Test User 2 | NCC (previous) [TESTEMP]
+    completed=2026-10-21T04:51:10.792000+00:00
+  2026-10-21 IST | TESTEMP01 | Test User 1 | CSD (previous) [TESTEMP]
+    completed=2026-10-21T05:28:27.916000+00:00
+
+## Named people of interest (any topic)
+  TESTEMP01 | Test User 1 | topic=resource-product-assessment-history:bdff334c-0ca9-4606-8933-08ebf9d8982a | status=completed | completed=2026-10-13T10:33:33.061000+00:00 | IST=2026-10-13 qb=True
+  TESTEMP03 | Test User 3 | topic=resource-product-assessment-history:faa48da0-6574-4869-990b-0312b8017622 | status=completed | completed=2026-10-14T03:00:13.114000+00:00 | IST=2026-10-14 qb=True
+  1040783 | Megha Kumari | topic=resource-product-assessment | status=completed | completed=2026-10-14T09:26:55.199000+00:00 | IST=2026-10-14 qb=True
+  TESTEMP02 | Test User 2 | topic=resource-product-assessment-history:8f70b634-6284-48f5-8e80-4b9c5ca6a88f | status=completed | completed=2026-10-15T09:18:28.511000+00:00 | IST=2026-10-15 qb=True
+  TESTEMP02 | Test User 2 | topic=resource-product-assessment-history:fbe03e1a-4f3d-4f16-afd6-8982d92c0b2d | status=completed | completed=2026-10-15T09:31:43.229000+00:00 | IST=2026-10-15 qb=True
+  1040066 | Mohammad Danish Khan | topic=resource-product-assessment-history:9be2763d-9714-4c73-8cd2-20e19317df04 | status=completed | completed=2026-10-16T06:54:51.360000+00:00 | IST=2026-10-16 qb=True
+  1034853 | Aryaman Singh | topic=resource-product-assessment-history:cad378b0-9800-4725-8bca-15f37f1c6a76 | status=completed | completed=2026-10-16T06:55:58.098000+00:00 | IST=2026-10-16 qb=True
+  TESTEMP01 | Test User 1 | topic=resource-product-assessment-history:b9e519a2-249b-4c40-8f99-3faf1b0cf60e | status=completed | completed=2026-10-21T03:10:30.217000+00:00 | IST=2026-10-21 qb=True
+  TESTEMP01 | Test User 1 | topic=resource-product-assessment-history:57057c60-5ca1-479d-8fb2-27c1d1cc40ee | status=completed | completed=2026-10-21T03:42:11.543000+00:00 | IST=2026-10-21 qb=True
+  TESTEMP02 | Test User 2 | topic=resource-product-assessment-history:88f2de33-9735-4625-85c0-534a547b5177 | status=completed | completed=2026-10-21T04:51:10.792000+00:00 | IST=2026-10-21 qb=True
+  TESTEMP01 | Test User 1 | topic=resource-product-assessment-history:f3c139c3-6d3f-4d8e-8dd8-21a9ecc211a1 | status=completed | completed=2026-10-21T05:28:27.916000+00:00 | IST=2026-10-21 qb=True
+  TESTEMP03 | Test User 3 | topic=resource-product-assessment | status=completed | completed=2026-10-21T05:30:58.145000+00:00 | IST=2026-10-21 qb=True
+  TESTEMP01 | Test User 1 | topic=resource-product-assessment | status=completed | completed=2026-10-21T05:33:39.407000+00:00 | IST=2026-10-21 qb=True
+  1042494 | Gudla Sri Sai Guru | topic=resource-product-assessment | status=completed | completed=2026-10-22T08:48:13.170000+00:00 | IST=2026-10-22 qb=True
+
+## Admin portal-eligible only (product_qb_eligible=1, current product completed, IST)
+  2026-10-14: 1 -> ['1040783']
+  2026-10-21: 2 -> ['TESTEMP01[TESTEMP]', 'TESTEMP03[TESTEMP]']
+  2026-10-22: 1 -> ['1042494']
