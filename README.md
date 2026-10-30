@@ -16,6 +16,15 @@ The API requires an existing, network-accessible database. Select it with `DB_TA
 
 The blueprint attaches a persistent disk at `/app/uploads` for uploaded documents and recordings. Keep that disk attached when redeploying.
 
+## Application logs
+
+Local generated logs under `logs/` are ignored by Git and excluded from Docker builds
+and Azure deployment syncs. They are not committed or copied from a developer machine.
+On the Azure VM, the running API writes its logs to the separately mounted `/opt/logs`
+directory; deployment updates application code without replacing or syncing those VM
+log files. See [`db/README.md`](./db/README.md#application-logs) for the daily files
+and monthly archive layout.
+
 ## Database migrations and seeds
 
 The `db/` directory contains SQL migrations, seed data, and the Node-based database CLI. Run migrations deliberately from an administrator/developer machine that can reach the target database; deployment does not automatically seed production data.

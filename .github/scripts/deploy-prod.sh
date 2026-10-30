@@ -38,7 +38,21 @@ fi
 [[ -f "$ENV_FILE" ]] || { echo "Missing production environment file: $ENV_FILE" >&2; exit 1; }
 [[ -f "$COMPOSE_FILE" ]] || { echo "Missing production Compose file: $COMPOSE_FILE" >&2; exit 1; }
 
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+sudo mkdir -p /opt/logs/prod /opt/logs/dev
+LOG_COMPOSE_DIR="$(mktemp -d)"
+LOG_COMPOSE_FILE="$LOG_COMPOSE_DIR/docker-compose.logging.yml"
+trap 'rm -f "$LOG_COMPOSE_FILE"; rmdir "$LOG_COMPOSE_DIR"' EXIT
+cat > "$LOG_COMPOSE_FILE" <<EOF
+services:
+  python:
+    environment:
+      NODE_ENV: production
+      LOG_DIR: /opt/logs
+    volumes:
+      - /opt/logs:/opt/logs
+EOF
+
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f "$LOG_COMPOSE_FILE")
 cd "$DEPLOY_ROOT"
 "${COMPOSE[@]}" config --services | grep -Fxq "$SERVICE" || {
   echo "Compose service '$SERVICE' was not found in $COMPOSE_FILE." >&2
@@ -54,7 +68,7 @@ sudo mkdir -p "$APP_DIR"
 sudo chown -R "$(id -un):$(id -gn)" "$APP_DIR"
 rsync -a --delete --checksum \
   --exclude='/.env*' --exclude='/.git/' --exclude='/.github/' \
-  --exclude='/uploads/' --exclude='/venv/' --exclude='/.venv/' \
+  --exclude='/uploads/' --exclude='/logs/' --exclude='/venv/' --exclude='/.venv/' \
   --exclude='/.pytest_cache/' --exclude='/**/__pycache__/' --exclude='*.pyc' \
   "$SRC/" "$APP_DIR/"
 

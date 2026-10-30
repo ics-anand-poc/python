@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 uploads/
+/logs/
 *.py[cod]
 .env
 .env.*
