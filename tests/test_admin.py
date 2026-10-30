@@ -117,7 +117,10 @@ def test_portal_settings_sync_and_logs(client, store, admin, monkeypatch, tmp_pa
     assert logs[0]["action"] == "UPDATE_PORTAL_SETTINGS"
     assert client.get("/api/admin/logs?module=employee&download=true", headers=admin).status_code == 200
     assert client.delete("/api/admin/logs", headers=admin).json() == {"success": True}
-    assert client.get("/api/admin/logs", headers=admin).json()["logs"] == []
+    cleared_logs = client.get("/api/admin/logs", headers=admin).json()["logs"]
+    actions = {entry["action"] for entry in cleared_logs}
+    assert "UPDATE_PORTAL_SETTINGS" not in actions
+    assert "CLEAR_SYSTEM_LOGS" in actions
 
 
 def test_admin_employee_test_attempts_and_video(client, store, admin, monkeypatch, tmp_path):

@@ -22,6 +22,9 @@ DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev}"
 APP_DIR="${APP_DIR:-$DEPLOY_ROOT/python}"
 ENV_FILE="${ENV_FILE:-$DEPLOY_ROOT/.env.local}"
 COMPOSE_FILE="${COMPOSE_FILE:-$DEPLOY_ROOT/docker-compose.azure.yml}"
+RECORDINGS_ENV=dev
+export RECORDINGS_ENV
+COMPOSE_OVERRIDE="$APP_DIR/compose.recordings.yml"
 SERVICE=python
 IMAGE=talentscope-dev-api:latest
 ROLLBACK_IMAGE=talentscope-dev-api:rollback
@@ -38,7 +41,32 @@ fi
 [[ -f "$ENV_FILE" ]] || { echo "Missing development environment file: $ENV_FILE" >&2; exit 1; }
 [[ -f "$COMPOSE_FILE" ]] || { echo "Missing development Compose file: $COMPOSE_FILE" >&2; exit 1; }
 
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+sudo mkdir -p /opt/logs/prod /opt/logs/dev
+LOG_COMPOSE_DIR="$(mktemp -d)"
+LOG_COMPOSE_FILE="$LOG_COMPOSE_DIR/docker-compose.logging.yml"
+trap 'rm -f "$LOG_COMPOSE_FILE"; rmdir "$LOG_COMPOSE_DIR"' EXIT
+cat > "$LOG_COMPOSE_FILE" <<EOF
+services:
+  python:
+    environment:
+      NODE_ENV: development
+      LOG_DIR: /opt/logs
+    volumes:
+      - /opt/logs:/opt/logs
+EOF
+
+echo "== Sync API $SHA -> $APP_DIR"
+sudo mkdir -p "$APP_DIR"
+sudo chown -R "$(id -un):$(id -gn)" "$APP_DIR"
+rsync -a --delete --checksum \
+  --exclude='/.env*' --exclude='/.git/' --exclude='/.github/' \
+  --exclude='/uploads/' --exclude='/logs/' --exclude='/venv/' --exclude='/.venv/' \
+  --exclude='/.pytest_cache/' --exclude='/**/__pycache__/' --exclude='*.pyc' \
+  "$SRC/" "$APP_DIR/"
+[[ -f "$COMPOSE_OVERRIDE" ]] || { echo "Missing recordings Compose override: $COMPOSE_OVERRIDE" >&2; exit 1; }
+
+sudo install -d -m 0750 "/opt/recordings/$RECORDINGS_ENV"
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f "$LOG_COMPOSE_FILE" -f "$COMPOSE_OVERRIDE")
 cd "$DEPLOY_ROOT"
 "${COMPOSE[@]}" config --services | grep -Fxq "$SERVICE" || {
   echo "Compose service '$SERVICE' was not found in $COMPOSE_FILE." >&2
@@ -48,15 +76,6 @@ cd "$DEPLOY_ROOT"
   echo "Compose service '$SERVICE' must use image $IMAGE." >&2
   exit 1
 }
-
-echo "== Sync API $SHA -> $APP_DIR"
-sudo mkdir -p "$APP_DIR"
-sudo chown -R "$(id -un):$(id -gn)" "$APP_DIR"
-rsync -a --delete --checksum \
-  --exclude='/.env*' --exclude='/.git/' --exclude='/.github/' \
-  --exclude='/uploads/' --exclude='/venv/' --exclude='/.venv/' \
-  --exclude='/.pytest_cache/' --exclude='/**/__pycache__/' --exclude='*.pyc' \
-  "$SRC/" "$APP_DIR/"
 
 PREVIOUS_CONTAINER="$("${COMPOSE[@]}" ps -q "$SERVICE" || true)"
 PREVIOUS_IMAGE_REF=""
@@ -72,6 +91,8 @@ if ! docker build --tag "$CANDIDATE_IMAGE" -f "$APP_DIR/Dockerfile" "$DEPLOY_ROO
   exit 1
 fi
 docker image tag "$CANDIDATE_IMAGE" "$IMAGE"
+
+bash "$APP_DIR/scripts/prepare_recordings_storage.sh" "$RECORDINGS_ENV" "$PREVIOUS_CONTAINER"
 
 healthy() {
   for _ in $(seq 1 60); do
@@ -100,8 +121,30 @@ rollback() {
   return 1
 }
 
+verify_upload_mount() {
+  local container source
+  container="$("${COMPOSE[@]}" ps -q "$SERVICE" || true)"
+  if [[ -z "$container" ]]; then
+    echo "The development API container is missing after recreation." >&2
+    return 1
+  fi
+  source="$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/app/uploads"}}{{.Source}}{{end}}{{end}}' "$container")" || return 1
+  if [[ "$source" != "/opt/recordings/$RECORDINGS_ENV" ]]; then
+    echo "Development uploads are mounted from '$source', expected /opt/recordings/$RECORDINGS_ENV." >&2
+    return 1
+  fi
+  return 0
+}
+
 if ! "${COMPOSE[@]}" up -d --no-deps --force-recreate --no-build "$SERVICE"; then
   echo "API container recreation failed." >&2
+  if ! rollback; then
+    echo "Automatic API rollback failed; manual intervention is required." >&2
+  fi
+  exit 1
+fi
+
+if ! verify_upload_mount; then
   if ! rollback; then
     echo "Automatic API rollback failed; manual intervention is required." >&2
   fi

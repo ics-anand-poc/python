@@ -168,6 +168,8 @@ def update_employee(body: dict = Body(default_factory=dict)):
     updates = body.get("updates") if isinstance(body.get("updates"), dict) else {}
     if not employee_id:
         return json_error(400, "Employee ID is required")
+    if {"score", "score_override", "score_override_jd_id"}.intersection(updates):
+        return json_error(400, "Score is calculated automatically and cannot be edited.")
     try:
         roster = corp_pool.load_roster()
         if not roster:
@@ -183,19 +185,6 @@ def update_employee(body: dict = Body(default_factory=dict)):
         for field in EDITABLE:
             if field in updates:
                 matched[field] = "" if updates[field] is None else str(updates[field])
-        if "score" in updates or "score_override" in updates:
-            raw = updates["score_override"] if "score_override" in updates else updates["score"]
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                return json_error(400, "Score must be a number.")
-            if value != value or value in (float("inf"), float("-inf")):
-                return json_error(400, "Score must be a number.")
-            clamped = max(0, min(100, _round(value)))
-            matched["score"] = clamped
-            matched["score_override"] = clamped
-            if "score_override_jd_id" in updates:
-                matched["score_override_jd_id"] = str(updates["score_override_jd_id"] or "").strip() or None
         matched["employee_id"] = next_id
         matched["manually_edited"] = True
         corp_pool.save_roster(roster)
@@ -409,11 +398,11 @@ def dispatch_mail(request: Request, body: dict = Body(default_factory=dict)):
                 subject = "Assessment Invitation - TalentScope"
                 hint = f"Login email address: <strong>{escape(emp['email'])}</strong>"
                 html = build_invite_html(emp["full_name"], hint, portal_url, "technical")
-            status, _ = mailer.dispatch(emp["email"], subject, html)
+            status, send_error = mailer.dispatch(emp["email"], subject, html)
             mailer.record(emp["email"], emp["full_name"], subject, html, status, requester)
             audit.add_log(requester, "ADMIN_INVITE_PORTAL_EMPLOYEE" if portal_mode else "ADMIN_INVITE_EMPLOYEE", emp["email"],
                           f"Dispatched {'employee portal' if portal_mode else 'internal'} assessment invite to {emp['full_name']} ({emp['employee_id']}). Status: {status}.", ip)
-            dispatched.append({"email": emp["email"], "name": emp["full_name"], "status": status})
+            dispatched.append({"email": emp["email"], "name": emp["full_name"], "status": status, "error": send_error})
         write_log("employee", "DISPATCH_PORTAL_EMPLOYEE_MAILS" if portal_mode else "DISPATCH_EMPLOYEE_MAILS", "success",
                   f"Successfully dispatched assessment invitations to {len(dispatched)} employees.")
         bump_sync("dispatch_mail")
@@ -537,6 +526,27 @@ def export_portal(request: Request):
         return _xlsx(exports.portal_workbook(employees, et.question_attempts_batch(done)), f"employee_portal_test_results_{date.today().isoformat()}.xlsx")
     except Exception as err:
         return public_error(err, "Export failed")
+
+
+@router.get("/export-portal-summary", dependencies=[Depends(require_permission("employeePortal"))])
+def export_portal_summary(request: Request):
+    from datetime import date
+
+    from services import exports
+
+    email = acting_admin_email(request) or ""
+    if email and not admin_accounts.get_access(email)["canViewEmployeePortal"]:
+        return json_error(403, "Employee Portal is not available for this login.")
+    try:
+        results = _test_results(get_store())
+        employees = pr.build_portal_employees(results)
+        done = [a["test_id"] for a in employees if a.get("test_id") and a.get("test_status") == "completed"]
+        source_name = f"employee_portal_test_results_{date.today().isoformat()}.xlsx"
+        detail_workbook = exports.portal_workbook(employees, et.question_attempts_batch(done))
+        data = exports.portal_summary_workbook(detail_workbook, source_name)
+        return _xlsx(data, f"employee_portal_summary_{date.today().isoformat()}.xlsx")
+    except Exception as err:
+        return public_error(err, "Summary export failed")
 
 
 @router.post("/percentage-matching")

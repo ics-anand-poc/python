@@ -1,0 +1,10 @@
+services:
+  python:
+    environment:
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - type: bind
+        source: /opt/recordings/${RECORDINGS_ENV:?RECORDINGS_ENV must be set to prod or dev}
+        target: /app/uploads
+        bind:
+          create_host_path: false

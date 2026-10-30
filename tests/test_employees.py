@@ -53,10 +53,11 @@ def test_roster_crud_and_shortlist(client, store, admin):
     assert mixed["employee"]["shortlisted"] is False
     assert client.post("/api/admin/employees", headers=admin, json={"employeeId": "ZZ"}).status_code == 404
     patched = client.patch("/api/admin/employees", headers=admin,
-                           json={"employeeId": "E3", "updates": {"full_name": "New Name", "score": 150, "score_override_jd_id": "jd1", "employee_id": "E9"}}).json()
-    assert patched["employee"]["employee_id"] == "E9" and patched["employee"]["score"] == 100 and patched["employee"]["manually_edited"] is True
+                           json={"employeeId": "E3", "updates": {"full_name": "New Name", "employee_id": "E9"}}).json()
+    assert patched["employee"]["employee_id"] == "E9" and patched["employee"]["manually_edited"] is True
+    assert client.patch("/api/admin/employees", headers=admin,
+                        json={"employeeId": "E9", "updates": {"score": 150}}).status_code == 400
     assert client.patch("/api/admin/employees", headers=admin, json={"employeeId": "E1", "updates": {"employee_id": "E2"}}).status_code == 409
-    assert client.patch("/api/admin/employees", headers=admin, json={"employeeId": "E1", "updates": {"score": "abc"}}).status_code == 400
     gone = client.request("DELETE", "/api/admin/employees", headers=admin, json={"ids": ["E1"]}).json()
     assert gone["deleted"] == 1 and [e["employee_id"] for e in gone["employees"]] == ["E2", "E9"]
     assert "e1" in corp_pool.load_deleted()["ids"]
@@ -105,6 +106,23 @@ def test_status_derivation():
     assert pr.derive_status(25, "t", "in_progress", 0, 25, "2026") == "in_progress"
     assert pr.derive_status(25, "t", "completed", 25, 25, None) == "completed"
     assert pr.normalize_employee_id("1001.0") == "1001" and pr.mapping_looks_valid(mapping_book()) is True
+
+
+def test_portal_roster_identifies_password_managed_accounts(store):
+    store.seed("employees", [
+        {"id": "e1", "employee_id": "1001", "email": "a@x.com", "full_name": "Managed",
+         "role": "employee", "product": "One-NDS", "product_qb_eligible": True},
+    ])
+    eligible = pr._eligible_accounts()
+    assert len(eligible) == 1 and eligible[0]["product_qb_eligible"] is True
+
+    mapping = {
+        "employee_id": "1001", "full_name": "Mapped", "role": "employee", "domain": "eng",
+        "product": "One-NDS", "email": "a@x.com", "ddh": "", "emp_status": "Confirmed",
+        "remarks": "", "assigned_questions": [], "assigned_question_count": 0,
+    }
+    assert pr._merge(eligible[0], mapping)["product_qb_eligible"] is True
+    assert pr._merge({**mapping, "product_qb_eligible": False}, mapping)["product_qb_eligible"] is False
 
 
 def test_reset_test_and_delete_video(client, store, admin):
@@ -178,6 +196,37 @@ def test_jd_match_via_shared_engine(client, store, admin):
     assert client.post("/api/admin/employees/llm-evaluate", headers=admin, json={"jdId": jd_id}).status_code == 400
 
 
+def test_portal_summary_uses_detailed_export_rows():
+    from openpyxl import load_workbook
+
+    from services import exports
+
+    employees = [
+        {"employee_id": "1001", "full_name": "A", "domain": "SDM", "product": "One-SDL", "test_status": "completed", "score": 20, "score_max": 25},
+        {"employee_id": "1002", "full_name": "B", "domain": "SDM", "product": "One-SDL", "test_status": "pending", "score_max": 25},
+        {"employee_id": "1003", "full_name": "C", "domain": "IPTel", "product": "CMG", "test_status": "not_started", "score_max": 25},
+        {"employee_id": "1004", "full_name": "D", "domain": "IPTel", "product": "CMG", "test_status": "unassigned", "score_max": 25},
+    ]
+    detailed = exports.portal_workbook(employees, {})
+    summary = load_workbook(io.BytesIO(exports.portal_summary_workbook(detailed, "employee_portal_test_results_test.xlsx")))
+
+    overall = summary["Summary"]
+    assert overall["B6"].value == 3
+    assert overall["B7"].value == 1
+    assert overall["B8"].value == 1
+    assert overall["B9"].value == 1
+    assert overall["B10"].value == pytest.approx(1 / 3)
+    assert [summary["By Domain"].cell(row=5, column=column).value for column in range(1, 7)] == [
+        "SDM", 2, 1, 1, 0, 50,
+    ]
+    assert [summary["By Domain"].cell(row=7, column=column).value for column in range(1, 7)] == [
+        "TOTAL", 3, 1, 1, 1, 33.3,
+    ]
+    assert [summary["Domain x Product"].cell(row=4, column=column).value for column in range(1, 8)] == [
+        "IPTel", "CMG", 1, 0, 0, 1, 0,
+    ]
+
+
 def test_exports(client, store, admin):
     from openpyxl import load_workbook
 
@@ -197,6 +246,37 @@ def test_exports(client, store, admin):
     detail = [c.value for c in wb["Question Details"][2]]
     assert detail[:6] == ["1001", "Acct One", 1, "Q one?", "B) b", "Correct"]
     assert client.get("/api/admin/employees/export-portal?email=ramendras@infinite.com", headers=admin).status_code == 403
+
+    summary_res = client.get("/api/admin/employees/export-portal-summary", headers=admin)
+    assert summary_res.status_code == 200 and "employee_portal_summary_" in summary_res.headers["content-disposition"]
+    summary_wb = load_workbook(io.BytesIO(summary_res.content))
+    assert summary_wb.sheetnames == ["Summary", "By Domain", "By Product", "Domain x Product", "How to use"]
+    summary = summary_wb["Summary"]
+    assert summary["A1"].value == "TalentScope Employee Portal — Status Summary"
+    assert summary["A2"].value.startswith("Source: employee_portal_test_results_")
+    assert [summary.cell(row=5, column=column).value for column in range(1, 3)] == ["Metric", "Count"]
+    assert [summary.cell(row=row, column=1).value for row in range(6, 11)] == [
+        "Total Scheduled", "Completed (took the test)", "In Progress", "Not Started", "Completion %",
+    ]
+    assert summary["B6"].value == sum(
+        1 for row in wb["Employee Portal Results"].iter_rows(min_row=2, values_only=True)
+        if row[7] in ("Completed", "In Progress", "Pending", "Not Started")
+    )
+    assert summary["B7"].value == sum(
+        1 for row in wb["Employee Portal Results"].iter_rows(min_row=2, values_only=True) if row[7] == "Completed"
+    )
+    assert summary["B8"].value == sum(
+        1 for row in wb["Employee Portal Results"].iter_rows(min_row=2, values_only=True) if row[7] in ("In Progress", "Pending")
+    )
+    assert summary["B9"].value == sum(
+        1 for row in wb["Employee Portal Results"].iter_rows(min_row=2, values_only=True) if row[7] == "Not Started"
+    )
+    assert summary["B10"].value == summary["B7"].value / summary["B6"].value
+    assert summary_wb["By Product"]["A1"].value == "Counts by Product"
+    assert summary_wb["By Product"]["A5"].value == "One-SDL"
+    assert summary_wb["By Product"]["A6"].value == "TOTAL"
+    assert summary_wb["How to use"]["A3"].value == "1. In TalentScope Admin -> Employee Portal, click Export Summary."
+    assert client.get("/api/admin/employees/export-portal-summary?email=ramendras@infinite.com", headers=admin).status_code == 403
 
     short = client.post("/api/admin/employees/export-shortlisted", headers=admin,
                         json={"employees": [{"employee_id": "E1", "full_name": "Eve", "score": 71.6, "matchDecision": "interview", "matchingSkills": ["Java", "SQL"]}],

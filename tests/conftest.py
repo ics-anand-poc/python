@@ -26,6 +26,8 @@ def load_schema() -> dict[str, set]:
             if mm:
                 cols.add(mm.group(1))
         tables[m.group(1)] = cols
+    for m in re.finditer(r"ALTER TABLE dbo\.(\w+)\s+ADD\s+(\w+)\s+", text, re.I):
+        tables.setdefault(m.group(1), set()).add(m.group(2))
     tables.setdefault("portal_settings", set()).add("key")
     return tables
 

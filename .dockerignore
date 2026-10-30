@@ -3,6 +3,9 @@ __pycache__
 .venv
 venv
 uploads
+python/logs
+logs
+python/logs
 *.pyc
 .git
 node_modules
