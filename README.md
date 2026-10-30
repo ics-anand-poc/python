@@ -4,9 +4,11 @@ FastAPI backend with SQL Server and Supabase PostgreSQL runtime targets, plus sc
 
 ## Azure production deployment
 
-The `Python API - Deploy to Azure Production` GitHub Actions workflow is manual-only. Run it from the `main` branch and confirm the production input; pushes do not deploy. Validation runs before deployment, which uses the `self-hosted`, `linux`, and `icsbetintapp01` runner labels.
+The `Python API - Deploy to Azure Production` GitHub Actions workflow deploys pushes to `main` and can also be run manually with production confirmation. The development workflow deploys pushes to `develop`. Validation runs before deployment, which uses the `self-hosted`, `linux`, and `icsbetintapp01` runner labels.
 
 The runner syncs this repository to `/opt/talentscope/talentscope-UI/python` and updates the existing `python` Compose service using `/opt/talentscope/talentscope-UI/docker-compose.azure.yml`. Production settings remain on the VM in `/opt/talentscope/talentscope-UI/.env.azure`; do not add them to GitHub or this repository.
+
+The Employee Portal has separate Excel exports for detailed results and a summary workbook. The summary includes overall totals plus domain, product, and domain-by-product breakdowns for all portal records.
 
 ## Deploy on Render
 
@@ -24,6 +26,12 @@ On the Azure VM, the running API writes its logs to the separately mounted `/opt
 directory; deployment updates application code without replacing or syncing those VM
 log files. See [`db/README.md`](./db/README.md#application-logs) for the daily files
 and monthly archive layout.
+
+### Azure VM uploads and recordings
+
+The VM deployment workflows mount `/opt/recordings/prod` or `/opt/recordings/dev` at `/app/uploads`; production and development therefore keep separate persistent data outside the application checkout and Docker image. Employee-test videos remain in the `employee_test_recordings/` subfolder and retain their `<test-id>.webm` names, which the API uses to associate each video with its database test/employee record.
+
+Before recreating the API container, deployment copies the existing `/app/uploads` contents from its current Docker volume into the matching `/opt/recordings/<environment>` directory. This is a copy, not a destructive move: the old volume is retained as a recovery copy, and subsequent builds/redeployments do not sync or delete files from `/opt/recordings`. Verify the recordings in the application before manually removing any old Docker volume.
 
 ## Database migrations and seeds
 

@@ -528,6 +528,27 @@ def export_portal(request: Request):
         return public_error(err, "Export failed")
 
 
+@router.get("/export-portal-summary", dependencies=[Depends(require_permission("employeePortal"))])
+def export_portal_summary(request: Request):
+    from datetime import date
+
+    from services import exports
+
+    email = acting_admin_email(request) or ""
+    if email and not admin_accounts.get_access(email)["canViewEmployeePortal"]:
+        return json_error(403, "Employee Portal is not available for this login.")
+    try:
+        results = _test_results(get_store())
+        employees = pr.build_portal_employees(results)
+        done = [a["test_id"] for a in employees if a.get("test_id") and a.get("test_status") == "completed"]
+        source_name = f"employee_portal_test_results_{date.today().isoformat()}.xlsx"
+        detail_workbook = exports.portal_workbook(employees, et.question_attempts_batch(done))
+        data = exports.portal_summary_workbook(detail_workbook, source_name)
+        return _xlsx(data, f"employee_portal_summary_{date.today().isoformat()}.xlsx")
+    except Exception as err:
+        return public_error(err, "Summary export failed")
+
+
 @router.post("/percentage-matching")
 async def percentage_matching(request: Request):
     from services import exports
